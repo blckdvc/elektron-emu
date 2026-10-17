@@ -5,6 +5,11 @@ Analog Rytm MKII, Digitone II and Model:Cycles. They don't imitate the sound.
 They run the real operating system of the machine inside an emulated CPU, so
 the menus, the sequencer and the sounds are the ones you get on the hardware.
 
+The +Drive is emulated too: it's the real storage the OS formats and uses, so
+projects, sounds and samples live there like on the hardware. On the
+Digitakt II, Rytm and Digitone II a +DRIVE tab on the side of the plug-in lets
+you load your own WAV files into it.
+
 Each folder has the plug-in for Mac and Windows, the source code and a README.
 
 ## The firmware is not included
