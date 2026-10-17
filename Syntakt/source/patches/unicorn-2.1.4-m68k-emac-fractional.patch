@@ -1,0 +1,183 @@
+diff --git a/qemu/target/m68k/helper.c b/qemu/target/m68k/helper.c
+index 98463eb..bd166cb 100644
+--- a/qemu/target/m68k/helper.c
++++ b/qemu/target/m68k/helper.c
+@@ -180,7 +180,7 @@ void HELPER(set_macsr)(CPUM68KState *env, uint32_t val)
+             if (env->macsr & MACSR_FI) {
+                 regval = (((uint64_t)acc) << 8) | extlow;
+                 regval |= ((int64_t)exthigh) << 40;
+-            } else if (env->macsr & MACSR_SU) {
++            } else if (!(env->macsr & MACSR_SU)) {
+                 regval = acc | (((int64_t)extlow) << 32);
+                 regval |= ((int64_t)exthigh) << 40;
+             } else {
+@@ -629,7 +629,8 @@ uint64_t HELPER(macmuls)(CPUM68KState *env, uint32_t op1, uint32_t op2)
+     int64_t product;
+     int64_t res;
+ 
+-    product = (uint64_t)op1 * op2;
++    /* Signed operands (CFPRM 6.2): the product of two int32 values.  */
++    product = (int64_t)(int32_t)op1 * (int32_t)op2;
+     res = (product << 24) >> 24;
+     if (res != product) {
+         env->macsr |= MACSR_V;
+@@ -663,19 +664,24 @@ uint64_t HELPER(macmulu)(CPUM68KState *env, uint32_t op1, uint32_t op2)
+ 
+ uint64_t HELPER(macmulf)(CPUM68KState *env, uint32_t op1, uint32_t op2)
+ {
+-    uint64_t product;
++    int64_t product;
+     uint32_t remainder;
+ 
+-    product = (uint64_t)op1 * op2;
++    /*
++     * Fractional operands are signed Q31 (CFPRM 6.2): the Q62 product is
++     * aligned to the accumulator, which this file keeps as Q39 (ACC << 8
++     * plus 8 extension bits each side), so the shift is 62 - 39 = 23.
++     */
++    product = (int64_t)(int32_t)op1 * (int32_t)op2;
+     if (env->macsr & MACSR_RT) {
+-        remainder = product & 0xffffff;
+-        product >>= 24;
+-        if (remainder > 0x800000)
++        remainder = product & 0x7fffff;
++        product >>= 23;
++        if (remainder > 0x400000)
+             product++;
+-        else if (remainder == 0x800000)
++        else if (remainder == 0x400000)
+             product += (product & 1);
+     } else {
+-        product >>= 24;
++        product >>= 23;
+     }
+     return product;
+ }
+@@ -760,7 +766,7 @@ void HELPER(mac_set_flags)(CPUM68KState *env, uint32_t acc)
+         val = ((int64_t)val) >> 40;
+         if (val != 0 && val != -1)
+             env->macsr |= MACSR_EV;
+-    } else if (env->macsr & MACSR_SU) {
++    } else if (!(env->macsr & MACSR_SU)) {
+         val = ((int64_t)val) >> 32;
+         if (val != 0 && val != -1)
+             env->macsr |= MACSR_EV;
+@@ -883,14 +889,14 @@ uint32_t HELPER(get_macf)(CPUM68KState *env, uint64_t val)
+     } else if (env->macsr & MACSR_RT) {
+         /* 32-bit rounding.  */
+         rem = val & 0xff;
+-        val >>= 8;
++        val = (uint64_t)((int64_t)val >> 8);
+         if (rem > 0x80)
+             val++;
+         else if (rem == 0x80)
+             val += (val & 1);
+     } else {
+         /* No rounding.  */
+-        val >>= 8;
++        val = (uint64_t)((int64_t)val >> 8);
+     }
+     if (env->macsr & MACSR_OMC) {
+         /* Saturate.  */
+@@ -901,8 +907,8 @@ uint32_t HELPER(get_macf)(CPUM68KState *env, uint64_t val)
+                 result = val & 0xffff;
+             }
+         } else {
+-            if (val != (uint32_t)val) {
+-                result = ((uint32_t)(val >> 63) & 0x7fffffff);
++            if ((int64_t)val != (int32_t)val) {
++                result = ((int64_t)val < 0) ? 0x80000000u : 0x7fffffffu;
+             } else {
+                 result = (uint32_t)val;
+             }
+diff --git a/qemu/target/m68k/translate.c b/qemu/target/m68k/translate.c
+index ec6a39c..a06bd42 100644
+--- a/qemu/target/m68k/translate.c
++++ b/qemu/target/m68k/translate.c
+@@ -5674,7 +5674,7 @@ static inline TCGv gen_mac_extract_word(DisasContext *s, TCGv val, int upper)
+             tcg_gen_andi_i32(tcg_ctx, tmp, val, 0xffff0000);
+         else
+             tcg_gen_shli_i32(tcg_ctx, tmp, val, 16);
+-    } else if (s->env->macsr & MACSR_SU) {
++    } else if (!(s->env->macsr & MACSR_SU)) {
+         if (upper)
+             tcg_gen_sari_i32(tcg_ctx, tmp, val, 16);
+         else
+@@ -5766,19 +5766,22 @@ DISAS_INSN(mac)
+     }
+     if (s->env->macsr & MACSR_FI) {
+         gen_helper_macmulf(tcg_ctx, s->mactmp, tcg_ctx->cpu_env, rx, ry);
++    } else if (!(s->env->macsr & MACSR_SU)) {
++        gen_helper_macmuls(tcg_ctx, s->mactmp, tcg_ctx->cpu_env, rx, ry);
+     } else {
++        gen_helper_macmulu(tcg_ctx, s->mactmp, tcg_ctx->cpu_env, rx, ry);
++    }
++    /* Scale factor (ext bits 10..9) applies in both modes (CFPRM 6.2).  */
++    switch ((ext >> 9) & 3) {
++    case 1:
++        tcg_gen_shli_i64(tcg_ctx, s->mactmp, s->mactmp, 1);
++        break;
++    case 3:
+         if (s->env->macsr & MACSR_SU)
+-            gen_helper_macmuls(tcg_ctx, s->mactmp, tcg_ctx->cpu_env, rx, ry);
+-        else
+-            gen_helper_macmulu(tcg_ctx, s->mactmp, tcg_ctx->cpu_env, rx, ry);
+-        switch ((ext >> 9) & 3) {
+-        case 1:
+-            tcg_gen_shli_i64(tcg_ctx, s->mactmp, s->mactmp, 1);
+-            break;
+-        case 3:
+             tcg_gen_shri_i64(tcg_ctx, s->mactmp, s->mactmp, 1);
+-            break;
+-        }
++        else
++            tcg_gen_sari_i64(tcg_ctx, s->mactmp, s->mactmp, 1);
++        break;
+     }
+ 
+     if (dual) {
+@@ -5808,7 +5811,7 @@ DISAS_INSN(mac)
+ 
+     if (s->env->macsr & MACSR_FI)
+         gen_helper_macsatf(tcg_ctx, tcg_ctx->cpu_env, tcg_const_i32(tcg_ctx, acc));
+-    else if (s->env->macsr & MACSR_SU)
++    else if (!(s->env->macsr & MACSR_SU))
+         gen_helper_macsats(tcg_ctx, tcg_ctx->cpu_env, tcg_const_i32(tcg_ctx, acc));
+     else
+         gen_helper_macsatu(tcg_ctx, tcg_ctx->cpu_env, tcg_const_i32(tcg_ctx, acc));
+@@ -5840,7 +5843,7 @@ DISAS_INSN(mac)
+             tcg_gen_add_i64(tcg_ctx, MACREG(acc), MACREG(acc), s->mactmp);
+         if (s->env->macsr & MACSR_FI)
+             gen_helper_macsatf(tcg_ctx, tcg_ctx->cpu_env, tcg_const_i32(tcg_ctx, acc));
+-        else if (s->env->macsr & MACSR_SU)
++        else if (!(s->env->macsr & MACSR_SU))
+             gen_helper_macsats(tcg_ctx, tcg_ctx->cpu_env, tcg_const_i32(tcg_ctx, acc));
+         else
+             gen_helper_macsatu(tcg_ctx, tcg_ctx->cpu_env, tcg_const_i32(tcg_ctx, acc));
+@@ -5885,7 +5888,7 @@ DISAS_INSN(from_mac)
+         gen_helper_get_macf(tcg_ctx, rx, tcg_ctx->cpu_env, acc);
+     } else if ((s->env->macsr & MACSR_OMC) == 0) {
+         tcg_gen_extrl_i64_i32(tcg_ctx, rx, acc);
+-    } else if (s->env->macsr & MACSR_SU) {
++    } else if (!(s->env->macsr & MACSR_SU)) {
+         gen_helper_get_macs(tcg_ctx, rx, acc);
+     } else {
+         gen_helper_get_macu(tcg_ctx, rx, acc);
+@@ -5961,7 +5964,7 @@ DISAS_INSN(to_mac)
+     if (s->env->macsr & MACSR_FI) {
+         tcg_gen_ext_i32_i64(tcg_ctx, acc, val);
+         tcg_gen_shli_i64(tcg_ctx, acc, acc, 8);
+-    } else if (s->env->macsr & MACSR_SU) {
++    } else if (!(s->env->macsr & MACSR_SU)) {
+         tcg_gen_ext_i32_i64(tcg_ctx, acc, val);
+     } else {
+         tcg_gen_extu_i32_i64(tcg_ctx, acc, val);
+@@ -5997,7 +6000,7 @@ DISAS_INSN(to_mext)
+     acc = tcg_const_i32(tcg_ctx, (insn & 0x400) ? 2 : 0);
+     if (s->env->macsr & MACSR_FI)
+         gen_helper_set_mac_extf(tcg_ctx, tcg_ctx->cpu_env, val, acc);
+-    else if (s->env->macsr & MACSR_SU)
++    else if (!(s->env->macsr & MACSR_SU))
+         gen_helper_set_mac_exts(tcg_ctx, tcg_ctx->cpu_env, val, acc);
+     else
+         gen_helper_set_mac_extu(tcg_ctx, tcg_ctx->cpu_env, val, acc);

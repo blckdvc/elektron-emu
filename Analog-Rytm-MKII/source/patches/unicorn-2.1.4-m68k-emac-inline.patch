@@ -1,0 +1,171 @@
+diff --git a/qemu/target/m68k/translate.c b/qemu/target/m68k/translate.c
+index d3da033..f6e019b 100644
+--- a/qemu/target/m68k/translate.c
++++ b/qemu/target/m68k/translate.c
+@@ -5694,6 +5694,139 @@ static void gen_mac_clear_flags(TCGContext *tcg_ctx)
+                      ~(MACSR_V | MACSR_Z | MACSR_N | MACSR_EV));
+ }
+ 
++/*
++ * Unicorn (emac-inline): the fractional MAC/MSAC without dual accumulate as
++ * TCG ops -- the same steps as helper_mac_fused in mode 0 (macmulf with the
++ * RT rounding read from MACSR at run time, the scale factor, the accumulate,
++ * macsatf with OMC read at run time, mac_set_flags for FI), with no helper
++ * call. FI/SU are the translation-time MACSR, as for the helpers.
++ */
++static void gen_mac_fi_inline(DisasContext *s, TCGv rx, TCGv ry, int acc,
++                              int scale, int msac, int su)
++{
++    TCGContext *tcg_ctx = s->uc->tcg_ctx;
++    TCGv_i64 p = tcg_temp_new_i64(tcg_ctx);
++    TCGv_i64 t = tcg_temp_new_i64(tcg_ctx);
++    TCGv_i64 u = tcg_temp_new_i64(tcg_ctx);
++    TCGv_i64 w = tcg_temp_new_i64(tcg_ctx);
++    TCGv_i64 zero = tcg_const_i64(tcg_ctx, 0);
++    TCGv m = tcg_temp_new(tcg_ctx);
++    TCGv f = tcg_temp_new(tcg_ctx);
++    TCGv_i64 a = MACREG(acc);
++
++    /* macmulf: signed Q31 x Q31 >> 23, RT rounding (half to even) */
++    tcg_gen_ext_i32_i64(tcg_ctx, p, rx);
++    tcg_gen_ext_i32_i64(tcg_ctx, t, ry);
++    tcg_gen_mul_i64(tcg_ctx, p, p, t);
++    tcg_gen_andi_i64(tcg_ctx, u, p, 0x7fffff);                 /* remainder */
++    tcg_gen_sari_i64(tcg_ctx, p, p, 23);
++    tcg_gen_setcondi_i64(tcg_ctx, TCG_COND_GTU, t, u, 0x400000);
++    tcg_gen_setcondi_i64(tcg_ctx, TCG_COND_EQ, w, u, 0x400000);
++    tcg_gen_andi_i64(tcg_ctx, u, p, 1);
++    tcg_gen_and_i64(tcg_ctx, w, w, u);
++    tcg_gen_or_i64(tcg_ctx, t, t, w);                           /* round up */
++    tcg_gen_andi_i32(tcg_ctx, m, QREG_MACSR, MACSR_RT);
++    tcg_gen_extu_i32_i64(tcg_ctx, u, m);
++    tcg_gen_movcond_i64(tcg_ctx, TCG_COND_NE, t, u, zero, t, zero);
++    tcg_gen_add_i64(tcg_ctx, p, p, t);
++    /* scale factor */
++    if (scale == 1) {
++        tcg_gen_shli_i64(tcg_ctx, p, p, 1);
++    } else if (scale == 3) {
++        if (su) {
++            tcg_gen_shri_i64(tcg_ctx, p, p, 1);
++        } else {
++            tcg_gen_sari_i64(tcg_ctx, p, p, 1);
++        }
++    }
++    /* accumulate */
++    if (msac) {
++        tcg_gen_sub_i64(tcg_ctx, a, a, p);
++    } else {
++        tcg_gen_add_i64(tcg_ctx, a, a, p);
++    }
++    /* macsatf */
++    tcg_gen_shli_i64(tcg_ctx, u, a, 16);
++    tcg_gen_sari_i64(tcg_ctx, u, u, 16);                        /* result */
++    tcg_gen_setcond_i64(tcg_ctx, TCG_COND_NE, w, u, a);         /* overflow */
++    tcg_gen_sari_i64(tcg_ctx, t, u, 63);
++    tcg_gen_xori_i64(tcg_ctx, t, t, 0x7fffffffffffLL);          /* saturated */
++    tcg_gen_andi_i32(tcg_ctx, m, QREG_MACSR, MACSR_OMC);
++    tcg_gen_extu_i32_i64(tcg_ctx, p, m);
++    tcg_gen_setcondi_i64(tcg_ctx, TCG_COND_NE, p, p, 0);
++    tcg_gen_and_i64(tcg_ctx, p, p, w);
++    tcg_gen_movcond_i64(tcg_ctx, TCG_COND_NE, a, p, zero, t, u);
++    tcg_gen_extrl_i64_i32(tcg_ctx, f, w);
++    tcg_gen_muli_i32(tcg_ctx, f, f, MACSR_V | (MACSR_PAV0 << acc));
++    tcg_gen_or_i32(tcg_ctx, QREG_MACSR, QREG_MACSR, f);
++    /* mac_set_flags (FI) */
++    tcg_gen_setcondi_i64(tcg_ctx, TCG_COND_EQ, t, a, 0);
++    tcg_gen_extrl_i64_i32(tcg_ctx, f, t);
++    tcg_gen_shli_i32(tcg_ctx, f, f, 2);                         /* Z */
++    tcg_gen_shri_i64(tcg_ctx, t, a, 47);
++    tcg_gen_andi_i64(tcg_ctx, t, t, 1);
++    tcg_gen_extrl_i64_i32(tcg_ctx, m, t);
++    tcg_gen_shli_i32(tcg_ctx, m, m, 3);                         /* N */
++    tcg_gen_or_i32(tcg_ctx, f, f, m);
++    tcg_gen_sari_i64(tcg_ctx, t, a, 40);
++    tcg_gen_addi_i64(tcg_ctx, t, t, 1);
++    tcg_gen_setcondi_i64(tcg_ctx, TCG_COND_GTU, t, t, 1);      /* EV: not 0 / -1 */
++    tcg_gen_extrl_i64_i32(tcg_ctx, m, t);
++    tcg_gen_or_i32(tcg_ctx, f, f, m);
++    tcg_gen_andi_i32(tcg_ctx, m, QREG_MACSR, MACSR_PAV0 << acc);
++    tcg_gen_setcondi_i32(tcg_ctx, TCG_COND_NE, m, m, 0);
++    tcg_gen_shli_i32(tcg_ctx, m, m, 1);                         /* V from PAV */
++    tcg_gen_or_i32(tcg_ctx, f, f, m);
++    tcg_gen_or_i32(tcg_ctx, QREG_MACSR, QREG_MACSR, f);
++
++    tcg_temp_free_i64(tcg_ctx, p);
++    tcg_temp_free_i64(tcg_ctx, t);
++    tcg_temp_free_i64(tcg_ctx, u);
++    tcg_temp_free_i64(tcg_ctx, w);
++    tcg_temp_free_i64(tcg_ctx, zero);
++    tcg_temp_free(tcg_ctx, m);
++    tcg_temp_free(tcg_ctx, f);
++}
++
++/* helper_get_macf for SU = 0 as TCG ops (RT and OMC read at run time). */
++static void gen_get_macf_inline(TCGContext *tcg_ctx, TCGv rx, TCGv_i64 acc)
++{
++    TCGv_i64 v = tcg_temp_new_i64(tcg_ctx);
++    TCGv_i64 r = tcg_temp_new_i64(tcg_ctx);
++    TCGv_i64 t = tcg_temp_new_i64(tcg_ctx);
++    TCGv_i64 zero = tcg_const_i64(tcg_ctx, 0);
++    TCGv m = tcg_temp_new(tcg_ctx);
++
++    tcg_gen_andi_i64(tcg_ctx, r, acc, 0xff);                    /* remainder */
++    tcg_gen_sari_i64(tcg_ctx, v, acc, 8);
++    tcg_gen_setcondi_i64(tcg_ctx, TCG_COND_GTU, t, r, 0x80);
++    tcg_gen_setcondi_i64(tcg_ctx, TCG_COND_EQ, r, r, 0x80);
++    tcg_gen_and_i64(tcg_ctx, r, r, v);
++    tcg_gen_andi_i64(tcg_ctx, r, r, 1);
++    tcg_gen_or_i64(tcg_ctx, t, t, r);                           /* round up */
++    tcg_gen_andi_i32(tcg_ctx, m, QREG_MACSR, MACSR_RT);
++    tcg_gen_extu_i32_i64(tcg_ctx, r, m);
++    tcg_gen_movcond_i64(tcg_ctx, TCG_COND_NE, t, r, zero, t, zero);
++    tcg_gen_add_i64(tcg_ctx, v, v, t);
++    /* OMC: saturate to 32 bits */
++    tcg_gen_ext32s_i64(tcg_ctx, r, v);
++    tcg_gen_setcond_i64(tcg_ctx, TCG_COND_NE, r, r, v);         /* out of range */
++    tcg_gen_andi_i32(tcg_ctx, m, QREG_MACSR, MACSR_OMC);
++    tcg_gen_extu_i32_i64(tcg_ctx, t, m);
++    tcg_gen_setcondi_i64(tcg_ctx, TCG_COND_NE, t, t, 0);
++    tcg_gen_and_i64(tcg_ctx, r, r, t);
++    tcg_gen_sari_i64(tcg_ctx, t, v, 63);
++    tcg_gen_xori_i64(tcg_ctx, t, t, 0x7fffffff);                /* 0x7fffffff / ...80000000 */
++    tcg_gen_movcond_i64(tcg_ctx, TCG_COND_NE, v, r, zero, t, v);
++    tcg_gen_extrl_i64_i32(tcg_ctx, rx, v);
++
++    tcg_temp_free_i64(tcg_ctx, v);
++    tcg_temp_free_i64(tcg_ctx, r);
++    tcg_temp_free_i64(tcg_ctx, t);
++    tcg_temp_free_i64(tcg_ctx, zero);
++    tcg_temp_free(tcg_ctx, m);
++}
++
+ DISAS_INSN(mac)
+ {
+     TCGContext *tcg_ctx = s->uc->tcg_ctx;
+@@ -5770,8 +5903,13 @@ DISAS_INSN(mac)
+                    : (!(s->env->macsr & MACSR_SU) ? 1 : 2);
+         int desc = acc | (((ext >> 9) & 3) << 2) | ((ext & 0x100) ? 0x10 : 0)
+                    | (mode << 5) | ((s->env->macsr & MACSR_SU) ? 0x80 : 0);
+-        gen_helper_mac_fused(tcg_ctx, tcg_ctx->cpu_env, rx, ry,
+-                             tcg_const_i32(tcg_ctx, desc));
++        if (mode == 0) {
++            gen_mac_fi_inline(s, rx, ry, acc, (ext >> 9) & 3, (ext & 0x100) != 0,
++                              (s->env->macsr & MACSR_SU) != 0);
++        } else {
++            gen_helper_mac_fused(tcg_ctx, tcg_ctx->cpu_env, rx, ry,
++                                 tcg_const_i32(tcg_ctx, desc));
++        }
+     } else {
+     if (s->env->macsr & MACSR_FI) {
+         gen_helper_macmulf(tcg_ctx, s->mactmp, tcg_ctx->cpu_env, rx, ry);
+@@ -5894,7 +6032,9 @@ DISAS_INSN(from_mac)
+     rx = (insn & 8) ? AREG(insn, 0) : DREG(insn, 0);
+     accnum = (insn >> 9) & 3;
+     acc = MACREG(accnum);
+-    if (s->env->macsr & MACSR_FI) {
++    if ((s->env->macsr & MACSR_FI) && !(s->env->macsr & MACSR_SU)) {
++        gen_get_macf_inline(tcg_ctx, rx, acc);        /* emac-inline */
++    } else if (s->env->macsr & MACSR_FI) {
+         gen_helper_get_macf(tcg_ctx, rx, tcg_ctx->cpu_env, acc);
+     } else if ((s->env->macsr & MACSR_OMC) == 0) {
+         tcg_gen_extrl_i64_i32(tcg_ctx, rx, acc);

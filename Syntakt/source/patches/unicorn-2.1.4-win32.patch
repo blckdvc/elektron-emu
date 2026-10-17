@@ -1,0 +1,147 @@
+diff --git a/qemu/accel/tcg/translate-all.c b/qemu/accel/tcg/translate-all.c
+index 71b6b2b..eb7b558 100644
+--- a/qemu/accel/tcg/translate-all.c
++++ b/qemu/accel/tcg/translate-all.c
+@@ -786,7 +786,12 @@ static inline size_t size_code_gen_buffer(size_t tb_size)
+ {
+     /* Size the buffer.  */
+     if (tb_size == 0) {
++#ifdef _WIN32
++        /* committed up front on Windows (alloc_code_gen_buffer): keep it modest */
++        tb_size = 256 * MiB;
++#else
+         tb_size = DEFAULT_CODE_GEN_BUFFER_SIZE;
++#endif
+     }
+     if (tb_size < MIN_CODE_GEN_BUFFER_SIZE) {
+         tb_size = MIN_CODE_GEN_BUFFER_SIZE;
+@@ -913,89 +918,22 @@ static inline void *alloc_code_gen_buffer(struct uc_struct *uc)
+ {
+     TCGContext *tcg_ctx = uc->tcg_ctx;
+     size_t size = tcg_ctx->code_gen_buffer_size;
+-    uint8_t *closure, *data;
+-    uint8_t *ptr;
+-    void* handler = code_gen_buffer_handler;
+ 
+-    may_remove_handler(uc);    
+-
+-    // Naive trampoline implementation
+-    closure = VirtualAlloc(NULL, CLOSURE_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+-    if (!closure) {
+-        return NULL;
+-    }
+-    uc->seh_closure = closure;
+-    data = closure + CLOSURE_SIZE /2;
+-    
+-#ifdef _WIN64
+-    ptr = closure;
+-    *ptr = 0x48; // REX.w
+-    ptr += 1;
+-    *ptr = 0xb8; // mov rax
+-    ptr += 1;
+-    memcpy(ptr, &data, 8); // mov rax, &data
+-    ptr += 8;
+-    // ; rax = &data
+-    // mov [rax], rdx ; save rdx
+-    // mov rdx, [rax+0x8] ; move uc pointer to 2nd arg
+-    // sub rsp, 0x10; reserve 2 slots as ms fastcall requires
+-    // call [rax + 0x10] ; go to handler
+-    const char tramp[] = "\x48\x89\x10\x48\x8b\x50\x08\x48\x83\xec\x10\xff\x50\x10";
+-    memcpy(ptr, (void*)tramp, sizeof(tramp) - 1); // Note last zero!
+-    ptr += sizeof(tramp) - 1;
+-    *ptr = 0x48; // REX.w
+-    ptr += 1;
+-    *ptr = 0xba; // mov rdx
+-    ptr += 1;
+-    memcpy(ptr, &data, 8); // mov rdx, &data
+-    ptr += 8;
+-    // ; rdx = &data
+-    // add rsp, 0x10 ; clean stack
+-    // mov rdx, [rdx] ; restore rdx
+-    // ret
+-    const char tramp2[] = "\x48\x83\xc4\x10\x48\x8b\x12\xc3";
+-    memcpy(ptr, (void*)tramp2, sizeof(tramp2) - 1);
+-
+-    memcpy(data + 0x8,  (void*)&uc, 8);
+-    memcpy(data + 0x10, (void*)&handler, 8);
+-#else
+-    ptr = closure;
+-    *ptr = 0xb8; // mov eax
+-    ptr += 1;
+-    memcpy(ptr, (void*)&data, 4); // mov eax, &data
+-    ptr += 4;
+-    // ; eax = &data
+-    // mov [eax], edx; save edx
+-    // mov [eax+0x4], ecx; save ecx
+-    // mov ecx, [esp+4]; get ptr to exception because of cdecl
+-    // mov edx, [eax+0x8]; get ptr to uc
+-    // call [eax + 0xC]; get ptr to our handler, it's fastcall so we don't clean stac
+-    const char tramp[] = "\x89\x10\x89\x48\x04\x8b\x4c\x24\x04\x8b\x50\x08\xff\x50\x0c";
+-    memcpy(ptr, (void*)tramp, sizeof(tramp) - 1);
+-    ptr += sizeof(tramp) - 1;
+-    *ptr = 0xb9; // mov ecx
+-    ptr += 1;
+-    memcpy(ptr, (void*)&data, 4); // mov ecx, &data
+-    ptr += 4;
+-
+-    // mov edx, [ecx] ; restore edx
+-    // mov ecx, [ecx+4] ; restore ecx
+-    // ret 4
+-    const char tramp2[] = "\x8b\x11\x8b\x49\x04\xc2\x04\x00";
+-    memcpy(ptr, (void*)tramp2, sizeof(tramp2) - 1);
+-
+-    memcpy(data + 0x8,  (void*)&uc, 4);
+-    memcpy(data + 0xC, (void*)&handler, 4);
+-#endif
+-
+-    uc->seh_handle = AddVectoredExceptionHandler(0, (PVECTORED_EXCEPTION_HANDLER)closure);
+-    if (!uc->seh_handle) {
+-        VirtualFree(uc->seh_closure, 0, MEM_RELEASE);
+-        uc->seh_closure = NULL;
+-        return NULL;
+-    }
+-
+-    return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_EXECUTE_READWRITE);
++    /*
++     * Commit the whole buffer now instead of reserving it and committing on
++     * demand from a vectored exception handler. The handler was reached
++     * through a hand-written trampoline that reserves only 0x10 bytes of
++     * stack before the call, while the Win64 ABI gives every callee 0x20
++     * bytes of home space: a handler that uses it (GCC/mingw does) writes
++     * over the dispatcher's frame. Measured: access violation reading
++     * 0xFFFFFFFFFFFFFFFF in the first uc_mem_map on Windows 11, while the
++     * same DLL passes under Wine. The default size is lowered for this
++     * (size_code_gen_buffer) so the commit stays modest.
++     */
++    may_remove_handler(uc);
++    uc->seh_closure = NULL;
++    uc->seh_handle = NULL;
++    return VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+ }
+ void free_code_gen_buffer(struct uc_struct *uc)
+ {
+diff --git a/qemu/util/oslib-posix.c b/qemu/util/oslib-posix.c
+index 615e477..be56038 100644
+--- a/qemu/util/oslib-posix.c
++++ b/qemu/util/oslib-posix.c
+@@ -71,6 +71,20 @@ void *qemu_try_memalign(size_t alignment, size_t size)
+     if (alignment < sizeof(void*)) {
+         alignment = sizeof(void*);
+     }
++#if defined(__MINGW32__)
++    /*
++     * GCC knows that structures like M68kCPU need 16 bytes and stores into
++     * them with movaps; cpu_m68k_init allocates one with qemu_memalign(8, ...),
++     * and __mingw_aligned_malloc(size, 8) may return an address that is only
++     * 8-byte aligned. Measured on Windows 11 (Core Ultra): #GP ("access
++     * violation reading 0xFFFFFFFFFFFFFFFF") at cpu_m68k_init+0xbb, movaps
++     * %xmm0,0x889d0(%rbx). glibc/macOS allocators give 16 anyway, and MSVC
++     * does not emit movaps there, which is why only mingw on real Windows failed.
++     */
++    if (alignment < 16) {
++        alignment = 16;
++    }
++#endif
+ 
+ #if defined(CONFIG_POSIX_MEMALIGN)
+     int ret;

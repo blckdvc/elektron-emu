@@ -1,0 +1,69 @@
+diff --git a/include/unicorn/m68k.h b/include/unicorn/m68k.h
+index 3e2c52a..ec84431 100644
+--- a/include/unicorn/m68k.h
++++ b/include/unicorn/m68k.h
+@@ -71,6 +71,16 @@ typedef enum uc_m68k_reg {
+     UC_M68K_REG_CR_DTT0,
+     UC_M68K_REG_CR_DTT1,
+ 
++    /* EMAC (ColdFire): MACSR, MASK, and the accumulators in QEMU's internal
++       representation (uint64_t; Q39 in fractional mode). Written raw: the
++       caller must not change MACSR mode bits (FI/SU/RT/OMC) this way. */
++    UC_M68K_REG_MACSR,
++    UC_M68K_REG_MAC_MASK,
++    UC_M68K_REG_MACC0,
++    UC_M68K_REG_MACC1,
++    UC_M68K_REG_MACC2,
++    UC_M68K_REG_MACC3,
++
+     UC_M68K_REG_ENDING, // <-- mark the end of the list of registers
+ } uc_m68k_reg;
+ 
+diff --git a/qemu/target/m68k/unicorn.c b/qemu/target/m68k/unicorn.c
+index bb1d5b6..fcac119 100644
+--- a/qemu/target/m68k/unicorn.c
++++ b/qemu/target/m68k/unicorn.c
+@@ -66,6 +66,21 @@ uc_err reg_read(void *_env, int mode, unsigned int regid, void *value,
+         switch (regid) {
+         default:
+             break;
++        case UC_M68K_REG_MACSR:
++            CHECK_REG_TYPE(uint32_t);
++            *(uint32_t *)value = env->macsr;
++            break;
++        case UC_M68K_REG_MAC_MASK:
++            CHECK_REG_TYPE(uint32_t);
++            *(uint32_t *)value = env->mac_mask;
++            break;
++        case UC_M68K_REG_MACC0:
++        case UC_M68K_REG_MACC1:
++        case UC_M68K_REG_MACC2:
++        case UC_M68K_REG_MACC3:
++            CHECK_REG_TYPE(uint64_t);
++            *(uint64_t *)value = env->macc[regid - UC_M68K_REG_MACC0];
++            break;
+         case UC_M68K_REG_PC:
+             CHECK_REG_TYPE(uint32_t);
+             *(uint32_t *)value = env->pc;
+@@ -159,6 +174,21 @@ uc_err reg_write(void *_env, int mode, unsigned int regid, const void *value,
+         switch (regid) {
+         default:
+             break;
++        case UC_M68K_REG_MACSR:
++            CHECK_REG_TYPE(uint32_t);
++            env->macsr = *(uint32_t *)value;
++            break;
++        case UC_M68K_REG_MAC_MASK:
++            CHECK_REG_TYPE(uint32_t);
++            env->mac_mask = *(uint32_t *)value;
++            break;
++        case UC_M68K_REG_MACC0:
++        case UC_M68K_REG_MACC1:
++        case UC_M68K_REG_MACC2:
++        case UC_M68K_REG_MACC3:
++            CHECK_REG_TYPE(uint64_t);
++            env->macc[regid - UC_M68K_REG_MACC0] = *(uint64_t *)value;
++            break;
+         case UC_M68K_REG_PC:
+             CHECK_REG_TYPE(uint32_t);
+             env->pc = *(uint32_t *)value;

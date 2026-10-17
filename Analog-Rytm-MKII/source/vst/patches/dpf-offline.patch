@@ -1,0 +1,139 @@
+diff --git a/distrho/DistrhoPlugin.hpp b/distrho/DistrhoPlugin.hpp
+index 8570f9e..02a2414 100644
+--- a/distrho/DistrhoPlugin.hpp
++++ b/distrho/DistrhoPlugin.hpp
+@@ -116,6 +116,12 @@ public:
+     */
+     bool isSelfTestInstance() const noexcept;
+ 
++   /**
++      Whether the host renders offline (faster or slower than real time, e.g. an export).@n
++      Set by the VST3 wrapper from v3_process_setup::process_mode (V3_OFFLINE).
++    */
++    bool isRenderingOffline() const noexcept;
++
+ #if DISTRHO_PLUGIN_WANT_TIMEPOS
+    /**
+       Get the current host transport time position.@n
+diff --git a/distrho/src/DistrhoPlugin.cpp b/distrho/src/DistrhoPlugin.cpp
+index e2ffadb..8e168fd 100644
+--- a/distrho/src/DistrhoPlugin.cpp
++++ b/distrho/src/DistrhoPlugin.cpp
+@@ -117,6 +117,11 @@ bool Plugin::isSelfTestInstance() const noexcept
+     return pData->isSelfTest;
+ }
+ 
++bool Plugin::isRenderingOffline() const noexcept
++{
++    return pData->isOffline;
++}
++
+ #if DISTRHO_PLUGIN_WANT_TIMEPOS
+ const TimePosition& Plugin::getTimePosition() const noexcept
+ {
+diff --git a/distrho/src/DistrhoPluginAU.cpp b/distrho/src/DistrhoPluginAU.cpp
+index 919faa7..c8a3f3b 100644
+--- a/distrho/src/DistrhoPluginAU.cpp
++++ b/distrho/src/DistrhoPluginAU.cpp
+@@ -628,6 +628,12 @@ public:
+             outWritable = true;
+             return noErr;
+ 
++        case kAudioUnitProperty_OfflineRender:
++            DISTRHO_SAFE_ASSERT_UINT_RETURN(inScope == kAudioUnitScope_Global, inScope, kAudioUnitErr_InvalidScope);
++            outDataSize = sizeof(UInt32);
++            outWritable = true;
++            return noErr;
++
+         case kAudioUnitProperty_BypassEffect:
+             DISTRHO_SAFE_ASSERT_UINT_RETURN(inElement == 0, inElement, kAudioUnitErr_InvalidElement);
+             if (inScope == kAudioUnitScope_Global && fBypassParameterIndex != UINT32_MAX)
+@@ -1028,6 +1034,10 @@ public:
+             fLastRenderError = noErr;
+             return noErr;
+ 
++        case kAudioUnitProperty_OfflineRender:
++            *static_cast<UInt32*>(outData) = fPlugin.isOffline() ? 1 : 0;
++            return noErr;
++
+         case kAudioUnitProperty_BypassEffect:
+             *static_cast<OSStatus*>(outData) = fPlugin.getParameterValue(fBypassParameterIndex) > 0.5f ? 1 : 0;
+             return noErr;
+@@ -1414,10 +1424,12 @@ public:
+ 
+                        #if DISTRHO_PLUGIN_NUM_INPUTS != 0
+                         if (isNumChannelsComboValid(fNumInputs, fNumOutputs))
+-                       #endif
+                         {
+                             fPlugin.setAudioPortIO(fNumInputs, fNumOutputs);
+                         }
++                       #else
++                        fPlugin.setAudioPortIO(0, fNumOutputs);
++                       #endif
+                     }
+                    #endif
+ 
+@@ -1457,6 +1469,12 @@ public:
+             }
+             return noErr;
+ 
++        case kAudioUnitProperty_OfflineRender:
++            DISTRHO_SAFE_ASSERT_UINT_RETURN(inScope == kAudioUnitScope_Global, inScope, kAudioUnitErr_InvalidScope);
++            DISTRHO_SAFE_ASSERT_UINT_RETURN(inDataSize == sizeof(UInt32), inDataSize, kAudioUnitErr_InvalidPropertyValue);
++            fPlugin.setOffline(*static_cast<const UInt32*>(inData) != 0);
++            return noErr;
++
+         case kAudioUnitProperty_BypassEffect:
+             DISTRHO_SAFE_ASSERT_UINT_RETURN(inScope == kAudioUnitScope_Global, inScope, kAudioUnitErr_InvalidScope);
+             DISTRHO_SAFE_ASSERT_UINT_RETURN(inElement == 0, inElement, kAudioUnitErr_InvalidElement);
+diff --git a/distrho/src/DistrhoPluginInternal.hpp b/distrho/src/DistrhoPluginInternal.hpp
+index d0bef80..3bfccbf 100644
+--- a/distrho/src/DistrhoPluginInternal.hpp
++++ b/distrho/src/DistrhoPluginInternal.hpp
+@@ -145,6 +145,7 @@ struct Plugin::PrivateData {
+     const bool isDummy;
+     const bool isSelfTest;
+     bool isProcessing;
++    bool isOffline;
+ 
+ #if DISTRHO_PLUGIN_NUM_INPUTS+DISTRHO_PLUGIN_NUM_OUTPUTS > 0
+     AudioPortWithBusId* audioPorts;
+@@ -190,6 +191,7 @@ struct Plugin::PrivateData {
+           isDummy(d_nextPluginIsDummy),
+           isSelfTest(d_nextPluginIsSelfTest),
+           isProcessing(false),
++          isOffline(false),
+ #if DISTRHO_PLUGIN_NUM_INPUTS+DISTRHO_PLUGIN_NUM_OUTPUTS > 0
+           audioPorts(nullptr),
+ #endif
+@@ -1065,6 +1067,17 @@ public:
+         return true;
+     }
+ 
++    void setOffline(const bool offline) noexcept
++    {
++        DISTRHO_SAFE_ASSERT_RETURN(fData != nullptr,);
++        fData->isOffline = offline;
++    }
++
++    bool isOffline() const noexcept
++    {
++        return fData != nullptr && fData->isOffline;
++    }
++
+     void setSampleRate(const double sampleRate, const bool doCallback = false)
+     {
+         DISTRHO_SAFE_ASSERT_RETURN(fData != nullptr,);
+diff --git a/distrho/src/DistrhoPluginVST3.cpp b/distrho/src/DistrhoPluginVST3.cpp
+index 7295c89..8cb3bf9 100644
+--- a/distrho/src/DistrhoPluginVST3.cpp
++++ b/distrho/src/DistrhoPluginVST3.cpp
+@@ -1349,7 +1349,7 @@ public:
+         const bool active = fPlugin.isActive();
+         fPlugin.deactivateIfNeeded();
+ 
+-        // TODO process_mode can be V3_REALTIME, V3_PREFETCH, V3_OFFLINE
++        fPlugin.setOffline(setup->process_mode == V3_OFFLINE);
+ 
+         fPlugin.setSampleRate(setup->sample_rate, true);
+         fPlugin.setBufferSize(setup->max_block_size, true);

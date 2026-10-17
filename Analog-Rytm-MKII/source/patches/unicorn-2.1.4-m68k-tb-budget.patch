@@ -1,0 +1,162 @@
+diff --git a/include/uc_priv.h b/include/uc_priv.h
+index c3132dc..cac0a2a 100644
+--- a/include/uc_priv.h
++++ b/include/uc_priv.h
+@@ -270,6 +270,8 @@ typedef struct TargetPageBits TargetPageBits;
+ typedef struct TCGContext TCGContext;
+ 
+ struct uc_struct {
++    /* tb-budget: {left, blocks} counted inline at every block start (NULL: off) */
++    int64_t *block_budget;
+     uc_arch arch;
+     uc_mode mode;
+     uc_err errnum; // qemu/cpu-exec.c
+diff --git a/include/unicorn/unicorn.h b/include/unicorn/unicorn.h
+index b4ffc6b..ab4ce48 100644
+--- a/include/unicorn/unicorn.h
++++ b/include/unicorn/unicorn.h
+@@ -1056,6 +1056,9 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
+  @return UC_ERR_OK on success, or other value on failure (refer to uc_err enum
+    for detailed error).
+ */
++UNICORN_EXPORT
++uc_err uc_set_block_budget(uc_engine *uc, int64_t *state);
++
+ UNICORN_EXPORT
+ uc_err uc_emu_stop(uc_engine *uc);
+ 
+diff --git a/qemu/accel/tcg/tcg-runtime.c b/qemu/accel/tcg/tcg-runtime.c
+index 6dbd427..5493037 100644
+--- a/qemu/accel/tcg/tcg-runtime.c
++++ b/qemu/accel/tcg/tcg-runtime.c
+@@ -182,4 +182,9 @@ void HELPER(check_exit_request)(void *p, uint32_t in_delay_slot) {
+             cpu_loop_exit_restore(uc->cpu, GETPC());
+         }
+     }
+-}
+\ No newline at end of file
++}
++/* tb-budget: the block budget ran out (translator_loop). */
++void HELPER(uc_budget_stop)(void *p)
++{
++    uc_emu_stop((uc_engine *)p);
++}
+diff --git a/qemu/accel/tcg/tcg-runtime.h b/qemu/accel/tcg/tcg-runtime.h
+index 8ba10e1..bffb0f5 100644
+--- a/qemu/accel/tcg/tcg-runtime.h
++++ b/qemu/accel/tcg/tcg-runtime.h
+@@ -260,4 +260,5 @@ DEF_HELPER_FLAGS_4(gvec_leu64, TCG_CALL_NO_RWG, void, ptr, ptr, ptr, i32)
+ 
+ DEF_HELPER_FLAGS_5(gvec_bitsel, TCG_CALL_NO_RWG, void, ptr, ptr, ptr, ptr, i32)
+ 
+-DEF_HELPER_2(check_exit_request, void, ptr, i32)
+\ No newline at end of file
++DEF_HELPER_2(check_exit_request, void, ptr, i32)
++DEF_HELPER_1(uc_budget_stop, void, ptr)
+diff --git a/qemu/accel/tcg/translator.c b/qemu/accel/tcg/translator.c
+index 72f21c4..cdbfffd 100644
+--- a/qemu/accel/tcg/translator.c
++++ b/qemu/accel/tcg/translator.c
+@@ -82,6 +82,41 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
+ 
+     // tcg_dump_ops(tcg_ctx, false, "translator loop");
+ 
++    /* tb-budget (uc_set_block_budget): what a block hook counting blocks did,
++       inline: left <= 0 -> stop (caught by the exit check just below), else
++       left -= 1, blocks += 1. */
++    if (uc->block_budget) {
++        TCGLabel *stop = gen_new_label(tcg_ctx);
++        /* a stop here resumes at this block: its PC must be in env, as the
++           block hook's pc_sync made sure */
++        if (!block_hook) {
++            ops->pc_sync(db, cpu);
++        }
++        TCGLabel *done = gen_new_label(tcg_ctx);
++        TCGv_ptr bp = tcg_const_ptr(tcg_ctx, uc->block_budget);
++        TCGv_i64 v = tcg_temp_new_i64(tcg_ctx);
++        tcg_gen_ld_i64(tcg_ctx, v, bp, 0);
++        tcg_gen_brcondi_i64(tcg_ctx, TCG_COND_LE, v, 0, stop);
++        tcg_temp_free_i64(tcg_ctx, v);
++        tcg_temp_free_ptr(tcg_ctx, bp);
++        bp = tcg_const_ptr(tcg_ctx, uc->block_budget);
++        v = tcg_temp_new_i64(tcg_ctx);
++        tcg_gen_ld_i64(tcg_ctx, v, bp, 0);
++        tcg_gen_subi_i64(tcg_ctx, v, v, 1);
++        tcg_gen_st_i64(tcg_ctx, v, bp, 0);
++        tcg_gen_ld_i64(tcg_ctx, v, bp, 8);
++        tcg_gen_addi_i64(tcg_ctx, v, v, 1);
++        tcg_gen_st_i64(tcg_ctx, v, bp, 8);
++        tcg_temp_free_i64(tcg_ctx, v);
++        tcg_temp_free_ptr(tcg_ctx, bp);
++        tcg_gen_br(tcg_ctx, done);
++        gen_set_label(tcg_ctx, stop);
++        bp = tcg_const_ptr(tcg_ctx, uc);
++        gen_helper_uc_budget_stop(tcg_ctx, bp);
++        tcg_temp_free_ptr(tcg_ctx, bp);
++        gen_set_label(tcg_ctx, done);
++    }
++
+     /* Start translating.  */
+     gen_tb_start(tcg_ctx, db->tb);
+     // tcg_dump_ops(tcg_ctx, false, "tb start");
+diff --git a/qemu/include/exec/gen-icount.h b/qemu/include/exec/gen-icount.h
+index 8b484cb..5d9048c 100644
+--- a/qemu/include/exec/gen-icount.h
++++ b/qemu/include/exec/gen-icount.h
+@@ -32,8 +32,28 @@ static inline void gen_io_end(TCGContext *tcg_ctx)
+ 
+ static inline void gen_tb_start(TCGContext *tcg_ctx, TranslationBlock *tb)
+ {
+-    TCGv_ptr puc = tcg_const_ptr(tcg_ctx, tcg_ctx->uc);
+-    TCGv_i32 tmp = tcg_const_i32(tcg_ctx, 0);
++    TCGv_ptr puc;
++    TCGv_i32 tmp;
++    if (tcg_ctx->delay_slot_flag == NULL) {
++        /* tb-budget: test the exit request inline and call the helper only
++           when one is pending (as upstream QEMU's gen_tb_start). The helper
++           does the same test again, so the exit path is unchanged. */
++        TCGLabel *ok = gen_new_label(tcg_ctx);
++        TCGv_i32 count = tcg_temp_new_i32(tcg_ctx);
++        tcg_gen_ld_i32(tcg_ctx, count, tcg_ctx->cpu_env,
++                       offsetof(ArchCPU, neg.icount_decr.u32) - offsetof(ArchCPU, env));
++        tcg_gen_brcondi_i32(tcg_ctx, TCG_COND_GE, count, 0, ok);
++        tcg_temp_free_i32(tcg_ctx, count);
++        puc = tcg_const_ptr(tcg_ctx, tcg_ctx->uc);
++        tmp = tcg_const_i32(tcg_ctx, 0);
++        gen_helper_check_exit_request(tcg_ctx, puc, tmp);
++        tcg_temp_free_i32(tcg_ctx, tmp);
++        tcg_temp_free_ptr(tcg_ctx, puc);
++        gen_set_label(tcg_ctx, ok);
++        return;
++    }
++    puc = tcg_const_ptr(tcg_ctx, tcg_ctx->uc);
++    tmp = tcg_const_i32(tcg_ctx, 0);
+     // Unicorn:
+     //    We CANT'T use brcondi_i32 here or we will fail liveness analysis
+     //    because it marks the end of BB
+diff --git a/uc.c b/uc.c
+index 14480ae..3a764df 100644
+--- a/uc.c
++++ b/uc.c
+@@ -1253,6 +1253,21 @@ uc_err uc_emu_start(uc_engine *uc, uint64_t begin, uint64_t until,
+     return err;
+ }
+ 
++/* tb-budget: count blocks inline instead of with a UC_HOOK_BLOCK. `state`
++   points at {int64_t left; int64_t blocks;}: at every block start, if
++   left <= 0 the run is stopped (uc_emu_stop, honoured by the block-start exit
++   check right after, so that block does not run), else left -= 1 and
++   blocks += 1 -- what a block hook doing the same did. NULL turns it off. */
++UNICORN_EXPORT
++uc_err uc_set_block_budget(uc_engine *uc, int64_t *state)
++{
++    UC_INIT(uc);
++    uc->block_budget = state;
++    uc->tb_flush(uc);
++    restore_jit_state(uc);
++    return UC_ERR_OK;
++}
++
+ UNICORN_EXPORT
+ uc_err uc_emu_stop(uc_engine *uc)
+ {

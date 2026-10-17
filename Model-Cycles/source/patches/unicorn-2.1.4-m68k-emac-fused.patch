@@ -1,0 +1,100 @@
+diff --git a/qemu/target/m68k/helper.c b/qemu/target/m68k/helper.c
+index bd166cb..4f69cb0 100644
+--- a/qemu/target/m68k/helper.c
++++ b/qemu/target/m68k/helper.c
+@@ -776,6 +776,55 @@ void HELPER(mac_set_flags)(CPUM68KState *env, uint32_t acc)
+     }
+ }
+ 
++/*
++ * Unicorn (emac-fused): one MAC or MSAC without dual accumulate in a single
++ * call -- the multiply (macmulf/macmuls/macmulu), the scale factor, the add or
++ * subtract into the accumulator, the saturation and mac_set_flags, exactly the
++ * sequence DISAS_INSN(mac) used to emit as three helper calls and TCG ops.
++ * desc: bits 1..0 acc, 3..2 scale factor (ext bits 10..9), 4 MSAC,
++ * 6..5 mode (0 fractional, 1 signed, 2 unsigned), 7 MACSR.SU -- the mode bits
++ * are the translation-time MACSR, as before.
++ */
++void HELPER(mac_fused)(CPUM68KState *env, uint32_t rx, uint32_t ry, uint32_t desc)
++{
++    int acc = desc & 3;
++    int mode = (desc >> 5) & 3;
++    uint64_t prod;
++
++    if (mode == 0) {
++        prod = HELPER(macmulf)(env, rx, ry);
++    } else if (mode == 1) {
++        prod = HELPER(macmuls)(env, rx, ry);
++    } else {
++        prod = HELPER(macmulu)(env, rx, ry);
++    }
++    switch ((desc >> 2) & 3) {
++    case 1:
++        prod <<= 1;
++        break;
++    case 3:
++        if (desc & 0x80) {
++            prod >>= 1;
++        } else {
++            prod = (uint64_t)((int64_t)prod >> 1);
++        }
++        break;
++    }
++    if (desc & 0x10) {
++        env->macc[acc] -= prod;
++    } else {
++        env->macc[acc] += prod;
++    }
++    if (mode == 0) {
++        HELPER(macsatf)(env, acc);
++    } else if (mode == 1) {
++        HELPER(macsats)(env, acc);
++    } else {
++        HELPER(macsatu)(env, acc);
++    }
++    HELPER(mac_set_flags)(env, acc);
++}
++
+ #define EXTSIGN(val, index) (     \
+     (index == 0) ? (int8_t)(val) : ((index == 1) ? (int16_t)(val) : (val)) \
+ )
+diff --git a/qemu/target/m68k/helper.h b/qemu/target/m68k/helper.h
+index 413f88d..5e00165 100644
+--- a/qemu/target/m68k/helper.h
++++ b/qemu/target/m68k/helper.h
+@@ -98,6 +98,7 @@ DEF_HELPER_2(macsats, void, env, i32)
+ DEF_HELPER_2(macsatu, void, env, i32)
+ DEF_HELPER_2(macsatf, void, env, i32)
+ DEF_HELPER_2(mac_set_flags, void, env, i32)
++DEF_HELPER_4(mac_fused, void, env, i32, i32, i32)
+ DEF_HELPER_2(set_macsr, void, env, i32)
+ DEF_HELPER_2(get_macf, i32, env, i64)
+ DEF_HELPER_1(get_macs, i32, i64)
+diff --git a/qemu/target/m68k/translate.c b/qemu/target/m68k/translate.c
+index a06bd42..d3da033 100644
+--- a/qemu/target/m68k/translate.c
++++ b/qemu/target/m68k/translate.c
+@@ -5764,6 +5764,15 @@ DISAS_INSN(mac)
+         rx = gen_mac_extract_word(s, rx, (ext & 0x80) != 0);
+         ry = gen_mac_extract_word(s, ry, (ext & 0x40) != 0);
+     }
++    if (!dual) {
++        /* emac-fused: multiply, scale, accumulate, saturate, flags in one call */
++        int mode = (s->env->macsr & MACSR_FI) ? 0
++                   : (!(s->env->macsr & MACSR_SU) ? 1 : 2);
++        int desc = acc | (((ext >> 9) & 3) << 2) | ((ext & 0x100) ? 0x10 : 0)
++                   | (mode << 5) | ((s->env->macsr & MACSR_SU) ? 0x80 : 0);
++        gen_helper_mac_fused(tcg_ctx, tcg_ctx->cpu_env, rx, ry,
++                             tcg_const_i32(tcg_ctx, desc));
++    } else {
+     if (s->env->macsr & MACSR_FI) {
+         gen_helper_macmulf(tcg_ctx, s->mactmp, tcg_ctx->cpu_env, rx, ry);
+     } else if (!(s->env->macsr & MACSR_SU)) {
+@@ -5854,6 +5863,7 @@ DISAS_INSN(mac)
+ #endif
+     }
+     gen_helper_mac_set_flags(tcg_ctx, tcg_ctx->cpu_env, tcg_const_i32(tcg_ctx, acc));
++    }
+ 
+     if (insn & 0x30) {
+         TCGv rw;

@@ -1,0 +1,4 @@
+# Stringhe di 20+ caratteri che stanno sia nel MAIN OS (compilato con GCC) sia nel
+# plugin, ma sono messaggi della libstdc++ istanziati dai template del plugin
+# (non nelle .a della toolchain): una per riga, testo esatto. Niente di Elektron.
+vector::_M_default_append

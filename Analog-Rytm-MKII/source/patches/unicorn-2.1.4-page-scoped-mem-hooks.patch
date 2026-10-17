@@ -1,0 +1,153 @@
+diff --git a/qemu/accel/tcg/cputlb.c b/qemu/accel/tcg/cputlb.c
+index 6ff24ba..aa11a02 100644
+--- a/qemu/accel/tcg/cputlb.c
++++ b/qemu/accel/tcg/cputlb.c
+@@ -894,6 +894,14 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
+ 
+     wp_flags = cpu_watchpoint_address_matches(cpu, vaddr_page,
+                                               TARGET_PAGE_SIZE);
++    /*
++     * Unicorn (page-scoped memory hooks): only a page that a READ or WRITE
++     * memory hook covers takes the slow path, flagged here the way QEMU
++     * flags a watchpoint (cpu_check_watchpoint is empty in Unicorn, so the
++     * flag only forces load_helper/store_helper, where the hooks run).
++     * Every other page keeps the inline fast path; see tcg_uc_has_hookmem.
++     */
++    wp_flags |= uc_mem_hook_page_flags(cpu->uc, paddr_page, TARGET_PAGE_SIZE);
+ 
+     index = tlb_index(env, mmu_idx, vaddr_page);
+     te = tlb_entry(env, mmu_idx, vaddr_page);
+diff --git a/qemu/include/exec/exec-all.h b/qemu/include/exec/exec-all.h
+index 68c6567..2f280eb 100644
+--- a/qemu/include/exec/exec-all.h
++++ b/qemu/include/exec/exec-all.h
+@@ -477,6 +477,37 @@ address_space_translate_for_iotlb(CPUState *cpu, int asidx, hwaddr addr,
+ hwaddr memory_region_section_get_iotlb(CPUState *cpu,
+                                        MemoryRegionSection *section);
+ 
++/* Unicorn: BP_MEM_READ / BP_MEM_WRITE for a page that a READ(_AFTER) /
++   WRITE memory hook overlaps (a hook with begin > end covers everything). */
++static inline int _uc_hook_page_overlap(struct list_item *cur, hwaddr lo,
++                                        hwaddr hi)
++{
++    while (cur != NULL) {
++        struct hook *h = (struct hook *)cur->data;
++        if (!h->to_delete &&
++            (h->begin > h->end || (h->begin <= hi && h->end >= lo))) {
++            return 1;
++        }
++        cur = cur->next;
++    }
++    return 0;
++}
++
++static inline int uc_mem_hook_page_flags(struct uc_struct *uc, hwaddr page,
++                                         hwaddr size)
++{
++    int flags = 0;
++    hwaddr hi = page + size - 1;
++    if (_uc_hook_page_overlap(uc->hook[UC_HOOK_MEM_READ_IDX].head, page, hi) ||
++        _uc_hook_page_overlap(uc->hook[UC_HOOK_MEM_READ_AFTER_IDX].head, page, hi)) {
++        flags |= BP_MEM_READ;
++    }
++    if (_uc_hook_page_overlap(uc->hook[UC_HOOK_MEM_WRITE_IDX].head, page, hi)) {
++        flags |= BP_MEM_WRITE;
++    }
++    return flags;
++}
++
+ static inline bool uc_mem_hook_installed(struct uc_struct *uc, hwaddr paddr)
+ {
+     if (HOOK_EXISTS_BOUNDED(uc, UC_HOOK_MEM_FETCH_UNMAPPED, paddr))
+diff --git a/qemu/tcg/aarch64/tcg-target.inc.c b/qemu/tcg/aarch64/tcg-target.inc.c
+index 50c9e59..2f2ebd3 100644
+--- a/qemu/tcg/aarch64/tcg-target.inc.c
++++ b/qemu/tcg/aarch64/tcg-target.inc.c
+@@ -1587,7 +1587,7 @@ static bool tcg_out_qemu_ld_slow_path(TCGContext *s, TCGLabelQemuLdst *lb)
+     MemOp opc = get_memop(oi);
+     MemOp size = opc & MO_SIZE;
+ 
+-    const int type = tcg_uc_has_hookmem(s) ? R_AARCH64_JUMP26 : R_AARCH64_CONDBR19;
++    const int type = R_AARCH64_CONDBR19;   /* always B.cond now, see tcg_out_tlb_read */
+     if (!patch_reloc(lb->label_ptr[0], type, (intptr_t)s->code_ptr, 0)) {
+         return false;
+     }
+@@ -1613,7 +1613,7 @@ static bool tcg_out_qemu_st_slow_path(TCGContext *s, TCGLabelQemuLdst *lb)
+     MemOp opc = get_memop(oi);
+     MemOp size = opc & MO_SIZE;
+ 
+-    const int type = tcg_uc_has_hookmem(s) ? R_AARCH64_JUMP26 : R_AARCH64_CONDBR19;
++    const int type = R_AARCH64_CONDBR19;   /* always B.cond now, see tcg_out_tlb_read */
+     if (!patch_reloc(lb->label_ptr[0], type, (intptr_t)s->code_ptr, 0)) {
+         return false;
+     }
+@@ -1713,11 +1713,10 @@ static void tcg_out_tlb_read(TCGContext *s, TCGReg addr_reg, MemOp opc,
+ 
+     /* If not equal, we jump to the slow path. */
+     *label_ptr = s->code_ptr;
+-    // Unicorn: fast path if hookmem is not enabled
+-    if (!tcg_uc_has_hookmem(s))
+-        tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
+-    else
+-        tcg_out_insn(s, 3206, B, 0);
++    // Unicorn: the fast path stays valid with memory hooks installed, because
++    // the TLB entry of every page a hook covers carries TLB_WATCHPOINT
++    // (tlb_set_page_with_attrs), which makes this compare fail for it alone.
++    tcg_out_insn(s, 3202, B_C, TCG_COND_NE, 0);
+ }
+ 
+ #endif /* CONFIG_SOFTMMU */
+diff --git a/qemu/tcg/i386/tcg-target.inc.c b/qemu/tcg/i386/tcg-target.inc.c
+index 15cc1c0..3a401ca 100644
+--- a/qemu/tcg/i386/tcg-target.inc.c
++++ b/qemu/tcg/i386/tcg-target.inc.c
+@@ -1762,12 +1762,10 @@ static inline void tcg_out_tlb_load(TCGContext *s, TCGReg addrlo, TCGReg addrhi,
+        path function argument setup.  */
+     tcg_out_mov(s, ttype, r1, addrlo);
+ 
+-    // Unicorn: fast path if hookmem is not enable
+-    if (!tcg_uc_has_hookmem(s))
+-        tcg_out_opc(s, OPC_JCC_long + JCC_JNE, 0, 0, 0);
+-    else
+-        /* slow_path, so data access will go via load_helper() */
+-        tcg_out_opc(s, OPC_JMP_long, 0, 0, 0);
++    // Unicorn: the fast path stays valid with memory hooks installed, because
++    // the TLB entry of every page a hook covers carries TLB_WATCHPOINT
++    // (tlb_set_page_with_attrs), which makes this compare fail for it alone.
++    tcg_out_opc(s, OPC_JCC_long + JCC_JNE, 0, 0, 0);
+ 
+     label_ptr[0] = s->code_ptr;
+     s->code_ptr += 4;
+diff --git a/uc.c b/uc.c
+index 75b89a0..f6a94d6 100644
+--- a/uc.c
++++ b/uc.c
+@@ -2022,6 +2022,14 @@ uc_err uc_hook_add(uc_engine *uc, uc_hook *hh, int type, void *callback,
+         i++;
+     }
+ 
++    // Unicorn (page-scoped memory hooks): TLB entries cached before this
++    // hook existed do not carry its slow-path flag; drop them so every page
++    // is looked up again (tlb_set_page_with_attrs).
++    if ((type & (UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE | UC_HOOK_MEM_READ_AFTER)) &&
++        uc->tcg_flush_tlb) {
++        uc->tcg_flush_tlb(uc);
++    }
++
+     // we didn't use the hook
+     // TODO: return an error?
+     if (hook->refs == 0) {
+@@ -2056,6 +2064,13 @@ uc_err uc_hook_del(uc_engine *uc, uc_hook hh)
+         }
+     }
+ 
++    // Unicorn (page-scoped memory hooks): pages flagged for this hook go
++    // back to the fast path once looked up again.
++    if ((hook->type & (UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE | UC_HOOK_MEM_READ_AFTER)) &&
++        uc->tcg_flush_tlb) {
++        uc->tcg_flush_tlb(uc);
++    }
++
+     restore_jit_state(uc);
+     return UC_ERR_OK;
+ }

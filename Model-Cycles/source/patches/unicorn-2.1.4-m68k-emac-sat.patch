@@ -1,0 +1,69 @@
+diff --git a/qemu/target/m68k/helper.c b/qemu/target/m68k/helper.c
+index 4f69cb0..e47dd73 100644
+--- a/qemu/target/m68k/helper.c
++++ b/qemu/target/m68k/helper.c
+@@ -702,8 +702,13 @@ void HELPER(macsats)(CPUM68KState *env, uint32_t acc)
+              * The result is saturated to 32 bits, despite overflow occurring
+              * at 48 bits.  Seems weird, but that's what the hardware docs
+              * say.
++             * Unicorn (emac-sat): to 0x0000_7fff_ffff when the true sum is
++             * positive and 0xffff_8000_0000 when negative (MCF5441x RM 5-16,
++             * "if (result[47] == 1)" on the wrapped 48-bit result).  tmp is
++             * that true sum; the wrapped one has the opposite sign, so
++             * positive overflows went to the most negative value.
+              */
+-            result = (result >> 63) ^ 0x7fffffff;
++            result = (tmp >> 63) ^ 0x7fffffff;
+         }
+     }
+     env->macc[acc] = result;
+@@ -744,7 +749,13 @@ void HELPER(macsatf)(CPUM68KState *env, uint32_t acc)
+     if (env->macsr & MACSR_V) {
+         env->macsr |= MACSR_PAV0 << acc;
+         if (env->macsr & MACSR_OMC) {
+-            result = (result >> 63) ^ 0x7fffffffffffll;
++            /*
++             * Unicorn (emac-sat): MCF5441x RM 5-17 -- 0x007f_ffff_ff00 for a
++             * positive true sum, 0xff80_0000_0000 for a negative one (ACC =
++             * 0x7fffffff / 0x80000000, extension bytes 0).  Was +-(2^47 - 1)
++             * with the sign of the wrapped result, i.e. inverted.
++             */
++            result = (sum < 0) ? -(1ll << 39) : 0x7fffffff00ll;
+         }
+     }
+     env->macc[acc] = result;
+@@ -978,7 +989,12 @@ uint32_t HELPER(get_macs)(uint64_t val)
+     if (val == (int32_t)val) {
+         return (int32_t)val;
+     } else {
+-        return (val >> 61) ^ ~SIGNBIT;
++        /*
++         * Unicorn (emac-sat): MOVE/MOVCLR ACC,Rx in signed integer mode with
++         * OMC (CFPRM 6-10): ACC[47] == 0 -> 0x7fff_ffff, else 0x8000_0000.
++         * (val >> 61) ^ ~SIGNBIT gave 0x7ffffff8 for every negative overflow.
++         */
++        return ((int64_t)val < 0) ? 0x80000000u : 0x7fffffffu;
+     }
+ }
+ 
+diff --git a/qemu/target/m68k/translate.c b/qemu/target/m68k/translate.c
+index 4940d3d..e34afef 100644
+--- a/qemu/target/m68k/translate.c
++++ b/qemu/target/m68k/translate.c
+@@ -5781,8 +5781,14 @@ static void gen_mac_fi_inline(DisasContext *s, TCGv rx, TCGv ry, int acc,
+     tcg_gen_setcond_i64(tcg_ctx, TCG_COND_NE, w, u, a);         /* overflow */
+     /* emac-spec: OMC is a TB flag too */
+     if (s->env->macsr & MACSR_OMC) {
+-        tcg_gen_sari_i64(tcg_ctx, t, u, 63);
+-        tcg_gen_xori_i64(tcg_ctx, t, t, 0x7fffffffffffLL);      /* saturated */
++        /*
++         * emac-sat: saturate by the sign of the true sum (a), not of the
++         * wrapped one (u), to 0x007f_ffff_ff00 / 0xff80_0000_0000
++         * (MCF5441x RM 5-17), as helper_macsatf.
++         */
++        tcg_gen_sari_i64(tcg_ctx, t, a, 63);
++        tcg_gen_andi_i64(tcg_ctx, t, t, (int64_t)(-(1ull << 39) ^ 0x7fffffff00ull));
++        tcg_gen_xori_i64(tcg_ctx, t, t, 0x7fffffff00LL);        /* saturated */
+         tcg_gen_movcond_i64(tcg_ctx, TCG_COND_NE, a, w, zero, t, u);
+     } else {
+         tcg_gen_mov_i64(tcg_ctx, a, u);

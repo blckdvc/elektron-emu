@@ -1,0 +1,115 @@
+diff --git a/include/uc_priv.h b/include/uc_priv.h
+index cac0a2a..4e7fa8a 100644
+--- a/include/uc_priv.h
++++ b/include/uc_priv.h
+@@ -365,6 +365,23 @@ struct uc_struct {
+     struct list hooks_to_del;
+     int hooks_count[UC_HOOK_MAX];
+ 
++    // hook-index patch: per-address cache of the UC_HOOK_CODE hooks whose bounds
++    // contain that address, in list order. helper_uc_tracecode used to walk the
++    // whole code-hook list on every hooked instruction; with many point hooks
++    // (idle loops, hot loops, tracers) that walk dominated. Filled on a miss,
++    // dropped as a whole by bumping code_hook_gen whenever a hook is added,
++    // deleted or purged. n == CODE_HOOK_CACHE_OVER means "too many, walk the list".
++#define CODE_HOOK_CACHE_SIZE 1024
++#define CODE_HOOK_CACHE_WAYS 6
++#define CODE_HOOK_CACHE_OVER 0xFFFF
++    uint32_t code_hook_gen;
++    struct uc_code_hook_cache {
++        uint64_t addr;
++        uint32_t gen;
++        uint16_t n;
++        struct hook *hooks[CODE_HOOK_CACHE_WAYS];
++    } code_hook_cache[CODE_HOOK_CACHE_SIZE];
++
+     // hook to count number of instructions for uc_emu_start()
+     uc_hook count_hook;
+ 
+diff --git a/uc.c b/uc.c
+index 3a764df..3d12137 100644
+--- a/uc.c
++++ b/uc.c
+@@ -313,6 +313,9 @@ uc_err uc_open(uc_arch arch, uc_mode mode, uc_engine **result)
+ 
+     if (arch < UC_ARCH_MAX) {
+         uc = calloc(1, sizeof(*uc));
++        if (uc) {
++            uc->code_hook_gen = 1; // hook-index patch: entries start stale
++        }
+         if (!uc) {
+             // memory insufficient
+             return UC_ERR_NOMEM;
+@@ -1070,6 +1073,7 @@ static void clear_deleted_hooks(uc_engine *uc)
+     }
+ 
+     list_clear(&uc->hooks_to_del);
++    uc->code_hook_gen++; // hook-index patch
+ }
+ 
+ UNICORN_EXPORT
+@@ -2032,6 +2036,7 @@ uc_err uc_hook_add(uc_engine *uc, uc_hook *hh, int type, void *callback,
+                     }
+                 }
+                 uc->hooks_count[i]++;
++                uc->code_hook_gen++; // hook-index patch
+             }
+         }
+         i++;
+@@ -2073,6 +2078,7 @@ uc_err uc_hook_del(uc_engine *uc, uc_hook hh)
+             hook->to_delete = true;
+             uc->hooks_count[i]--;
+             hook_append(&uc->hooks_to_del, hook);
++            uc->code_hook_gen++; // hook-index patch
+             if (i == UC_HOOK_MEM_READ_IDX || i == UC_HOOK_MEM_READ_AFTER_IDX ||
+                 i == UC_HOOK_MEM_WRITE_IDX) {
+                 flush = true;
+@@ -2155,6 +2161,48 @@ void helper_uc_tracecode(int32_t size, uc_hook_idx index, void *handle,
+         revert_uc_emu_stop(uc);
+     }
+ 
++    // hook-index patch: for a real instruction with code hooks, take the hooks
++    // that match this address from the per-address cache instead of walking
++    // the whole list. Same hooks, same order, same stop handling as below.
++    if (index == UC_HOOK_CODE_IDX && size != 0) {
++        struct uc_code_hook_cache *e =
++            &uc->code_hook_cache[((uint64_t)address >> 1) & (CODE_HOOK_CACHE_SIZE - 1)];
++        if (e->addr != (uint64_t)address || e->gen != uc->code_hook_gen) {
++            uint16_t n = 0;
++            for (cur = uc->hook[index].head;
++                 cur != NULL && (hook = (struct hook *)cur->data); cur = cur->next) {
++                if (HOOK_BOUND_CHECK(hook, (uint64_t)address)) {
++                    if (n < CODE_HOOK_CACHE_WAYS) {
++                        e->hooks[n++] = hook;
++                    } else {
++                        n = CODE_HOOK_CACHE_OVER;
++                        break;
++                    }
++                }
++            }
++            e->addr = (uint64_t)address;
++            e->gen = uc->code_hook_gen;
++            e->n = n;
++        }
++        if (e->n != CODE_HOOK_CACHE_OVER) {
++            uint16_t i, n = e->n;
++            for (i = 0; i < n; i++) {
++                hook = e->hooks[i];
++                if (hook->to_delete) {
++                    continue;
++                }
++                JIT_CALLBACK_GUARD(((uc_cb_hookcode_t)hook->callback)(
++                    uc, address, size, hook->user_data));
++                if (not_allow_stop && uc->stop_request) {
++                    revert_uc_emu_stop(uc);
++                } else if (!not_allow_stop && uc->stop_request) {
++                    break;
++                }
++            }
++            return;
++        }
++    }
++
+     for (cur = uc->hook[index].head;
+          cur != NULL && (hook = (struct hook *)cur->data); cur = cur->next) {
+         if (hook->to_delete) {

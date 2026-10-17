@@ -1,0 +1,6 @@
+# Stringhe che il firmware (GCC, libstdc++) e il plugin hanno in comune perche' vengono
+# dai runtime del compilatore, non dal firmware: check-bundle.sh le ignora (righe intere).
+ABCDEFGHIJKLMNOPQRSTUVWXYZ
+terminate called recursively
+vector::_M_default_append
+(anonymous namespace)

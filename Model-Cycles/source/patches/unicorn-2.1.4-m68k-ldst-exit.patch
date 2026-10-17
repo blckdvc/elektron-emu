@@ -1,0 +1,235 @@
+diff --git a/qemu/accel/tcg/cputlb.c b/qemu/accel/tcg/cputlb.c
+index df5ed25..414371a 100644
+--- a/qemu/accel/tcg/cputlb.c
++++ b/qemu/accel/tcg/cputlb.c
+@@ -1912,6 +1912,33 @@ _out:
+  * We don't bother with this widened value for SOFTMMU_CODE_ACCESS.
+  */
+ 
++/*
++ * Unicorn (ldst-exit): the exit-request check that used to follow every TCG
++ * load and store (check_exit_request after each qemu_ld/qemu_st). Only hooks
++ * and MMIO callbacks, which run on this slow path, can request an exit in the
++ * middle of a block, so the check lives here: same test, same state restore
++ * (the access completes first, the instruction is restored as before).
++ * Skipped inside the split halves of an unaligned access (size_recur_mem).
++ */
++static inline void uc_ldst_exit_check(CPUArchState *env, uintptr_t retaddr)
++{
++    struct uc_struct *uc = env->uc;
++
++    if (uc->size_recur_mem || !cpu_loop_exit_requested(uc->cpu)) {
++        return;
++    }
++    if (uc->nested_level == 1) {
++        tb_exec_unlock(uc);
++    }
++    uc->cpu->tcg_exit_req = 0;
++    if (uc->skip_sync_pc_on_exit) {
++        uc->skip_sync_pc_on_exit = false;
++        cpu_loop_exit(uc->cpu);
++    } else {
++        cpu_loop_exit_restore(uc->cpu, retaddr);
++    }
++}
++
+ static uint64_t full_ldub_mmu(CPUArchState *env, target_ulong addr,
+                               TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+@@ -1921,7 +1948,9 @@ static uint64_t full_ldub_mmu(CPUArchState *env, target_ulong addr,
+ tcg_target_ulong helper_ret_ldub_mmu(CPUArchState *env, target_ulong addr,
+                                      TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+-    return full_ldub_mmu(env, addr, oi, retaddr);
++    tcg_target_ulong r = full_ldub_mmu(env, addr, oi, retaddr);
++    uc_ldst_exit_check(env, retaddr);
++    return r;
+ }
+ 
+ static uint64_t full_le_lduw_mmu(CPUArchState *env, target_ulong addr,
+@@ -1934,7 +1963,9 @@ static uint64_t full_le_lduw_mmu(CPUArchState *env, target_ulong addr,
+ tcg_target_ulong helper_le_lduw_mmu(CPUArchState *env, target_ulong addr,
+                                     TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+-    return full_le_lduw_mmu(env, addr, oi, retaddr);
++    tcg_target_ulong r = full_le_lduw_mmu(env, addr, oi, retaddr);
++    uc_ldst_exit_check(env, retaddr);
++    return r;
+ }
+ 
+ static uint64_t full_be_lduw_mmu(CPUArchState *env, target_ulong addr,
+@@ -1947,7 +1978,9 @@ static uint64_t full_be_lduw_mmu(CPUArchState *env, target_ulong addr,
+ tcg_target_ulong helper_be_lduw_mmu(CPUArchState *env, target_ulong addr,
+                                     TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+-    return full_be_lduw_mmu(env, addr, oi, retaddr);
++    tcg_target_ulong r = full_be_lduw_mmu(env, addr, oi, retaddr);
++    uc_ldst_exit_check(env, retaddr);
++    return r;
+ }
+ 
+ static uint64_t full_le_ldul_mmu(CPUArchState *env, target_ulong addr,
+@@ -1960,7 +1993,9 @@ static uint64_t full_le_ldul_mmu(CPUArchState *env, target_ulong addr,
+ tcg_target_ulong helper_le_ldul_mmu(CPUArchState *env, target_ulong addr,
+                                     TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+-    return full_le_ldul_mmu(env, addr, oi, retaddr);
++    tcg_target_ulong r = full_le_ldul_mmu(env, addr, oi, retaddr);
++    uc_ldst_exit_check(env, retaddr);
++    return r;
+ }
+ 
+ static uint64_t full_be_ldul_mmu(CPUArchState *env, target_ulong addr,
+@@ -1973,21 +2008,27 @@ static uint64_t full_be_ldul_mmu(CPUArchState *env, target_ulong addr,
+ tcg_target_ulong helper_be_ldul_mmu(CPUArchState *env, target_ulong addr,
+                                     TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+-    return full_be_ldul_mmu(env, addr, oi, retaddr);
++    tcg_target_ulong r = full_be_ldul_mmu(env, addr, oi, retaddr);
++    uc_ldst_exit_check(env, retaddr);
++    return r;
+ }
+ 
+ uint64_t helper_le_ldq_mmu(CPUArchState *env, target_ulong addr,
+                            TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+-    return load_helper(env, addr, oi, retaddr, MO_LEQ, false,
+-                       helper_le_ldq_mmu);
++    uint64_t r = load_helper(env, addr, oi, retaddr, MO_LEQ, false,
++                             helper_le_ldq_mmu);
++    uc_ldst_exit_check(env, retaddr);
++    return r;
+ }
+ 
+ uint64_t helper_be_ldq_mmu(CPUArchState *env, target_ulong addr,
+                            TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+-    return load_helper(env, addr, oi, retaddr, MO_BEQ, false,
+-                       helper_be_ldq_mmu);
++    uint64_t r = load_helper(env, addr, oi, retaddr, MO_BEQ, false,
++                             helper_be_ldq_mmu);
++    uc_ldst_exit_check(env, retaddr);
++    return r;
+ }
+ 
+ /*
+@@ -2489,42 +2530,49 @@ void helper_ret_stb_mmu(CPUArchState *env, target_ulong addr, uint8_t val,
+                         TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+     store_helper(env, addr, val, oi, retaddr, MO_UB);
++    uc_ldst_exit_check(env, retaddr);
+ }
+ 
+ void helper_le_stw_mmu(CPUArchState *env, target_ulong addr, uint16_t val,
+                        TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+     store_helper(env, addr, val, oi, retaddr, MO_LEUW);
++    uc_ldst_exit_check(env, retaddr);
+ }
+ 
+ void helper_be_stw_mmu(CPUArchState *env, target_ulong addr, uint16_t val,
+                        TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+     store_helper(env, addr, val, oi, retaddr, MO_BEUW);
++    uc_ldst_exit_check(env, retaddr);
+ }
+ 
+ void helper_le_stl_mmu(CPUArchState *env, target_ulong addr, uint32_t val,
+                        TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+     store_helper(env, addr, val, oi, retaddr, MO_LEUL);
++    uc_ldst_exit_check(env, retaddr);
+ }
+ 
+ void helper_be_stl_mmu(CPUArchState *env, target_ulong addr, uint32_t val,
+                        TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+     store_helper(env, addr, val, oi, retaddr, MO_BEUL);
++    uc_ldst_exit_check(env, retaddr);
+ }
+ 
+ void helper_le_stq_mmu(CPUArchState *env, target_ulong addr, uint64_t val,
+                        TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+     store_helper(env, addr, val, oi, retaddr, MO_LEQ);
++    uc_ldst_exit_check(env, retaddr);
+ }
+ 
+ void helper_be_stq_mmu(CPUArchState *env, target_ulong addr, uint64_t val,
+                        TCGMemOpIdx oi, uintptr_t retaddr)
+ {
+     store_helper(env, addr, val, oi, retaddr, MO_BEQ);
++    uc_ldst_exit_check(env, retaddr);
+ }
+ 
+ /*
+diff --git a/qemu/target/m68k/cpu.c b/qemu/target/m68k/cpu.c
+index 6b636b8..7d90439 100644
+--- a/qemu/target/m68k/cpu.c
++++ b/qemu/target/m68k/cpu.c
+@@ -173,6 +173,9 @@ static void cfv4e_cpu_initfn(CPUState *obj)
+ 
+     m68k_set_feature(env, M68K_FEATURE_CF_ISA_A);
+     m68k_set_feature(env, M68K_FEATURE_CF_ISA_B);
++    /* ldst-exit patch: the V4e core of the MCF5441x has ISA_C (FF1, BITREV,
++       BYTEREV); QEMU implements them under ISA_A+/ISA_C. */
++    m68k_set_feature(env, M68K_FEATURE_CF_ISA_APLUSC);
+     m68k_set_feature(env, M68K_FEATURE_BRAL);
+     m68k_set_feature(env, M68K_FEATURE_CF_FPU);
+     m68k_set_feature(env, M68K_FEATURE_CF_EMAC);
+diff --git a/qemu/tcg/tcg-op.c b/qemu/tcg/tcg-op.c
+index d0223ea..6b72d38 100644
+--- a/qemu/tcg/tcg-op.c
++++ b/qemu/tcg/tcg-op.c
+@@ -2917,7 +2917,6 @@ void tcg_gen_qemu_ld_i32(TCGContext *tcg_ctx, TCGv_i32 val, TCGv addr, TCGArg id
+         }
+     }
+ 
+-    check_exit_request(tcg_ctx);
+ }
+ 
+ void tcg_gen_qemu_st_i32(TCGContext *tcg_ctx, TCGv_i32 val, TCGv addr, TCGArg idx, MemOp memop)
+@@ -2952,7 +2951,6 @@ void tcg_gen_qemu_st_i32(TCGContext *tcg_ctx, TCGv_i32 val, TCGv addr, TCGArg id
+         tcg_temp_free_i32(tcg_ctx, swap);
+     }
+ 
+-    check_exit_request(tcg_ctx);
+ }
+ 
+ void tcg_gen_qemu_ld_i64(TCGContext *tcg_ctx, TCGv_i64 val, TCGv addr, TCGArg idx, MemOp memop)
+@@ -2967,8 +2965,7 @@ void tcg_gen_qemu_ld_i64(TCGContext *tcg_ctx, TCGv_i64 val, TCGv addr, TCGArg id
+         } else {
+             tcg_gen_movi_i32(tcg_ctx, TCGV_HIGH(tcg_ctx, val), 0);
+         }
+-        check_exit_request(tcg_ctx);
+-        return;
++            return;
+     }
+ #endif
+ 
+@@ -3009,7 +3006,6 @@ void tcg_gen_qemu_ld_i64(TCGContext *tcg_ctx, TCGv_i64 val, TCGv addr, TCGArg id
+             g_assert_not_reached();
+         }
+     }
+-    check_exit_request(tcg_ctx);
+ }
+ 
+ void tcg_gen_qemu_st_i64(TCGContext *tcg_ctx, TCGv_i64 val, TCGv addr, TCGArg idx, MemOp memop)
+@@ -3019,8 +3015,7 @@ void tcg_gen_qemu_st_i64(TCGContext *tcg_ctx, TCGv_i64 val, TCGv addr, TCGArg id
+ #if TCG_TARGET_REG_BITS == 32
+     if ((memop & MO_SIZE) < MO_64) {
+         tcg_gen_qemu_st_i32(tcg_ctx, TCGV_LOW(tcg_ctx, val), addr, idx, memop);
+-        check_exit_request(tcg_ctx);
+-        return;
++            return;
+     }
+ #endif
+ 
+@@ -3055,7 +3050,6 @@ void tcg_gen_qemu_st_i64(TCGContext *tcg_ctx, TCGv_i64 val, TCGv addr, TCGArg id
+     if (swap) {
+         tcg_temp_free_i64(tcg_ctx, swap);
+     }
+-    check_exit_request(tcg_ctx);
+ }
+ 
+ static void tcg_gen_ext_i32(TCGContext *tcg_ctx, TCGv_i32 ret, TCGv_i32 val, MemOp opc)

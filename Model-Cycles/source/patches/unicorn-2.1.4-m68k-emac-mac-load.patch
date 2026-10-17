@@ -1,0 +1,52 @@
+diff --git a/qemu/target/m68k/translate.c b/qemu/target/m68k/translate.c
+index 5b3e497..ec6a39c 100644
+--- a/qemu/target/m68k/translate.c
++++ b/qemu/target/m68k/translate.c
+@@ -5715,16 +5715,22 @@ DISAS_INSN(mac)
+     ext = read_im16(env, s);
+ 
+     acc = ((insn >> 7) & 1) | ((ext >> 3) & 2);
+-    dual = ((insn & 0x30) != 0 && (ext & 3) != 0);
+-    if (dual && !m68k_feature(s->env, M68K_FEATURE_CF_EMAC_B)) {
+-        disas_undef(env, s, insn);
+-        return;
+-    }
++    /*
++     * In the load forms ext bits 3..0 are Ry, so bits 1..0 are not a
++     * dual-accumulate request on a core without EMAC_B (CFPRM p.6-4).
++     */
++    dual = ((insn & 0x30) != 0 && (ext & 3) != 0 &&
++            m68k_feature(s->env, M68K_FEATURE_CF_EMAC_B));
+     if (insn & 0x30) {
+         /* MAC with load.  */
+         tmp = gen_lea(env, s, insn, OS_LONG);
+         addr = tcg_temp_new(tcg_ctx);
+-        tcg_gen_and_i32(tcg_ctx, addr, tmp, QREG_MAC_MASK);
++        /* Ext bit 5 selects whether MASK applies to <ea>y (CFPRM p.6-4). */
++        if (ext & 0x20) {
++            tcg_gen_and_i32(tcg_ctx, addr, tmp, QREG_MAC_MASK);
++        } else {
++            tcg_gen_mov_i32(tcg_ctx, addr, tmp);
++        }
+         /*
+          * Load the value now to ensure correct exception behavior.
+          * Perform writeback after reading the MAC inputs.
+@@ -5732,7 +5738,7 @@ DISAS_INSN(mac)
+         loadval = gen_load(s, OS_LONG, addr, 0, IS_USER(s));
+ 
+         acc ^= 1;
+-        rx = (ext & 0x8000) ? AREG(ext, 12) : DREG(insn, 12);
++        rx = (ext & 0x8000) ? AREG(ext, 12) : DREG(ext, 12);
+         ry = (ext & 8) ? AREG(ext, 0) : DREG(ext, 0);
+     } else {
+         loadval = addr = tcg_ctx->NULL_QREG;
+@@ -5794,7 +5800,8 @@ DISAS_INSN(mac)
+     }
+ #endif
+ 
+-    if (insn & 0x100)
++    /* Ext bit 8 selects MSAC; op word bit 8 is always 0 here (CFPRM p.6-22). */
++    if (ext & 0x100)
+         tcg_gen_sub_i64(tcg_ctx, MACREG(acc), MACREG(acc), s->mactmp);
+     else
+         tcg_gen_add_i64(tcg_ctx, MACREG(acc), MACREG(acc), s->mactmp);

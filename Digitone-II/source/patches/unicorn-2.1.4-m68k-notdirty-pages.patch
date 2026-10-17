@@ -1,0 +1,102 @@
+diff --git a/qemu/accel/tcg/cputlb.c b/qemu/accel/tcg/cputlb.c
+index 3d0bebd..6ff24ba 100644
+--- a/qemu/accel/tcg/cputlb.c
++++ b/qemu/accel/tcg/cputlb.c
+@@ -1194,23 +1194,30 @@ static void notdirty_write(CPUState *cpu, vaddr mem_vaddr, unsigned size,
+     struct uc_struct *uc = cpu->uc;
+ #endif
+     ram_addr_t ram_addr = mem_vaddr + iotlbentry->addr;
+-    MemoryRegion *mr = cpu->uc->memory_mapping(cpu->uc, tlbe->paddr | (mem_vaddr & ~TARGET_PAGE_MASK));
++    hwaddr paddr = tlbe->paddr | (mem_vaddr & ~TARGET_PAGE_MASK);
++    MemoryRegion *mr = cpu->uc->memory_mapping(cpu->uc, paddr);
++    bool has_code = false;
+ 
+     if (mr && (mr->perms & UC_PROT_EXEC) != 0) {
+         struct page_collection *pages
+             = page_collection_lock(cpu->uc, ram_addr, ram_addr + size);
+         tb_invalidate_phys_page_fast(cpu->uc, pages, ram_addr, size, retaddr);
++        has_code = tb_page_has_code(cpu->uc, ram_addr);
+         page_collection_unlock(pages);
+     }
+ 
+     /* For exec pages, this is cleared in tb_gen_code. */
+     // If we:
+-    // - have memory hooks installed
++    // - have write hooks installed (they need the slow path)
+     // - or doing snapshot
+-    // , then never clean the tlb
++    // - or the page still holds translated code (self-modifying code check)
++    // , then never clean the tlb. On m68k without an MMU every TLB entry is
++    // executable (addr_code != -1), so the old addr_code test kept every guest
++    // store on the slow path; the page's TB list is the precise test, and
++    // tb_gen_code sets TLB_NOTDIRTY again when code appears on the page.
+     if (!(!mr || (tlbe->addr_write != -1 && mr->priority < cpu->uc->snapshot_level)) &&
+-            !(tlbe->addr_code != -1) &&
+-            !uc_mem_hook_installed(cpu->uc, tlbe->paddr | (mem_vaddr & ~TARGET_PAGE_MASK))) {
++            !has_code &&
++            !HOOK_EXISTS_BOUNDED(cpu->uc, UC_HOOK_MEM_WRITE, paddr)) {
+         tlb_set_dirty(cpu, mem_vaddr);
+     }
+ }
+diff --git a/qemu/accel/tcg/translate-all.c b/qemu/accel/tcg/translate-all.c
+index 71b6b2b..b6c37c0 100644
+--- a/qemu/accel/tcg/translate-all.c
++++ b/qemu/accel/tcg/translate-all.c
+@@ -1838,11 +1838,10 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
+         phys_page2 = get_page_addr_code(env, virt_page2);
+     }
+ 
+-    /* Undoes tlb_set_dirty in notdirty_write. */
+-    if (!uc_mem_hook_installed(cpu->uc, tb->pc)) {
+-        tlb_reset_dirty_by_vaddr(cpu, pc & TARGET_PAGE_MASK,
+-                                (pc & ~TARGET_PAGE_MASK) + tb->size);
+-    }
++    /* Undoes tlb_set_dirty in notdirty_write: always, since notdirty_write can now
++       mark a page dirty with memory hooks installed. */
++    tlb_reset_dirty_by_vaddr(cpu, pc & TARGET_PAGE_MASK,
++                            (pc & ~TARGET_PAGE_MASK) + tb->size);
+ 
+     /*
+      * No explicit memory barrier is required -- tb_link_page() makes the
+@@ -2016,6 +2015,17 @@ void tb_invalidate_phys_range(struct uc_struct *uc, ram_addr_t start, ram_addr_t
+  *
+  * Call with all @pages in the range [@start, @start + len[ locked.
+  */
++/*
++ * Unicorn (m68k): does the RAM page still hold translated code? Lets notdirty_write
++ * drop TLB_NOTDIRTY on pages without TBs, as QEMU does with its dirty bitmap.
++ */
++bool tb_page_has_code(struct uc_struct *uc, tb_page_addr_t addr)
++{
++    PageDesc *p = page_find(uc, addr >> TARGET_PAGE_BITS);
++
++    return p != NULL && p->first_tb != (uintptr_t)0;
++}
++
+ void tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_collection *pages,
+                                   tb_page_addr_t start, int len,
+                                   uintptr_t retaddr)
+diff --git a/qemu/accel/tcg/translate-all.h b/qemu/accel/tcg/translate-all.h
+index 30ce55d..6f35e0b 100644
+--- a/qemu/accel/tcg/translate-all.h
++++ b/qemu/accel/tcg/translate-all.h
+@@ -29,6 +29,7 @@ void page_collection_unlock(struct page_collection *set);
+ void tb_invalidate_phys_page_fast(struct uc_struct *uc, struct page_collection *pages,
+                                   tb_page_addr_t start, int len,
+                                   uintptr_t retaddr);
++bool tb_page_has_code(struct uc_struct *uc, tb_page_addr_t addr);
+ void tb_invalidate_phys_page_range(struct uc_struct *uc, tb_page_addr_t start, tb_page_addr_t end);
+ void tb_invalidate_phys_range(struct uc_struct *uc, ram_addr_t start, ram_addr_t end);
+ void tb_check_watchpoint(CPUState *cpu, uintptr_t retaddr);
+diff --git a/qemu/m68k.h b/qemu/m68k.h
+index 67f9436..353f97e 100644
+--- a/qemu/m68k.h
++++ b/qemu/m68k.h
+@@ -1270,6 +1270,7 @@
+ #define tb_invalidate_phys_page_range tb_invalidate_phys_page_range_m68k
+ #define tb_invalidate_phys_range tb_invalidate_phys_range_m68k
+ #define tb_invalidate_phys_page_fast tb_invalidate_phys_page_fast_m68k
++#define tb_page_has_code tb_page_has_code_m68k
+ #define tb_check_watchpoint tb_check_watchpoint_m68k
+ #define cpu_io_recompile cpu_io_recompile_m68k
+ #define tb_flush_jmp_cache tb_flush_jmp_cache_m68k

@@ -1,0 +1,147 @@
+diff --git a/qemu/accel/tcg/cputlb.c b/qemu/accel/tcg/cputlb.c
+index 6ff24ba..df5ed25 100644
+--- a/qemu/accel/tcg/cputlb.c
++++ b/qemu/accel/tcg/cputlb.c
+@@ -352,6 +352,26 @@ void tlb_flush_all_cpus_synced(CPUState *src_cpu)
+     tlb_flush_by_mmuidx_all_cpus_synced(src_cpu, ALL_MMUIDX_BITS);
+ }
+ 
++
++/* Unicorn (hookmem-pages): does a live hook of list `idx` cover any byte of
++   the page at `page`? */
++static bool uc_hook_covers_page(struct uc_struct *uc, int idx, target_ulong page)
++{
++    struct list_item *cur;
++    uint64_t lo = page, hi = (uint64_t)page + TARGET_PAGE_SIZE - 1;
++
++    for (cur = uc->hook[idx].head; cur != NULL; cur = cur->next) {
++        struct hook *hk = (struct hook *)cur->data;
++        if (hk->to_delete) {
++            continue;
++        }
++        if (hk->begin > hk->end || (hk->begin <= hi && hk->end >= lo)) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ static inline bool tlb_hit_page_anyprot(struct uc_struct *uc, CPUTLBEntry *tlb_entry,
+                                         target_ulong page)
+ {
+@@ -942,6 +962,10 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
+         if (wp_flags & BP_MEM_READ) {
+             tn.addr_read |= TLB_WATCHPOINT;
+         }
++        if (uc_hook_covers_page(cpu->uc, UC_HOOK_MEM_READ_IDX, paddr_page) ||
++            uc_hook_covers_page(cpu->uc, UC_HOOK_MEM_READ_AFTER_IDX, paddr_page)) {
++            tn.addr_read |= TLB_UC_HOOK;
++        }
+     } else {
+         tn.addr_read = -1;
+     }
+@@ -958,6 +982,9 @@ void tlb_set_page_with_attrs(CPUState *cpu, target_ulong vaddr,
+         if (prot & PAGE_WRITE_INV) {
+             tn.addr_write |= TLB_INVALID_MASK;
+         }
++        if (is_ram && uc_hook_covers_page(cpu->uc, UC_HOOK_MEM_WRITE_IDX, paddr_page)) {
++            tn.addr_write |= TLB_NOTDIRTY;
++        }
+         if (wp_flags & BP_MEM_WRITE) {
+             tn.addr_write |= TLB_WATCHPOINT;
+         }
+@@ -1217,7 +1244,7 @@ static void notdirty_write(CPUState *cpu, vaddr mem_vaddr, unsigned size,
+     // tb_gen_code sets TLB_NOTDIRTY again when code appears on the page.
+     if (!(!mr || (tlbe->addr_write != -1 && mr->priority < cpu->uc->snapshot_level)) &&
+             !has_code &&
+-            !HOOK_EXISTS_BOUNDED(cpu->uc, UC_HOOK_MEM_WRITE, paddr)) {
++            !uc_hook_covers_page(cpu->uc, UC_HOOK_MEM_WRITE_IDX, paddr & TARGET_PAGE_MASK)) {
+         tlb_set_dirty(cpu, mem_vaddr);
+     }
+ }
+@@ -1456,7 +1483,7 @@ static void *atomic_mmu_lookup(CPUArchState *env, target_ulong addr,
+     }
+ 
+     /* Let the guest notice RMW on a write-only page.  */
+-    if (unlikely(tlbe->addr_read != (tlb_addr & ~TLB_NOTDIRTY))) {
++    if (unlikely((tlbe->addr_read & ~TLB_UC_HOOK) != (tlb_addr & ~TLB_NOTDIRTY))) {
+         tlb_fill(env_cpu(env), addr, 1 << s_bits, MMU_DATA_LOAD,
+                  mmu_idx, retaddr);
+         /* Since we don't support reads and writes to different addresses,
+diff --git a/qemu/include/exec/cpu-all.h b/qemu/include/exec/cpu-all.h
+index ddac720..edcabcd 100644
+--- a/qemu/include/exec/cpu-all.h
++++ b/qemu/include/exec/cpu-all.h
+@@ -341,9 +341,12 @@ CPUArchState *cpu_copy(CPUArchState *env);
+ /* Use this mask to check interception with an alignment mask
+  * in a TCG backend.
+  */
++/* Unicorn: a memory read hook covers part of this page (addr_read only). */
++#define TLB_UC_HOOK         (1 << (TARGET_PAGE_BITS_MIN - 7))
++
+ #define TLB_FLAGS_MASK \
+     (TLB_INVALID_MASK | TLB_NOTDIRTY | TLB_MMIO \
+-    | TLB_WATCHPOINT | TLB_BSWAP | TLB_DISCARD_WRITE)
++    | TLB_WATCHPOINT | TLB_BSWAP | TLB_DISCARD_WRITE | TLB_UC_HOOK)
+ 
+ /**
+  * tlb_hit_page: return true if page aligned @addr is a hit against the
+diff --git a/qemu/include/tcg/tcg.h b/qemu/include/tcg/tcg.h
+index bbeb4b9..9a9434a 100644
+--- a/qemu/include/tcg/tcg.h
++++ b/qemu/include/tcg/tcg.h
+@@ -1590,9 +1590,11 @@ void uc_add_inline_hook(uc_engine *uc, struct hook *hk, void** args, int args_le
+ 
+ static inline bool tcg_uc_has_hookmem(TCGContext *s)
+ {
+-    return HOOK_EXISTS(s->uc, UC_HOOK_MEM_READ) ||
+-        HOOK_EXISTS(s->uc, UC_HOOK_MEM_READ_AFTER) ||
+-        HOOK_EXISTS(s->uc, UC_HOOK_MEM_WRITE);
++    /* Unicorn (hookmem-pages): memory hooks no longer send every access to
++       the slow path. tlb_set_page_with_attrs marks only the pages a read or
++       write hook covers (TLB_UC_HOOK in addr_read, TLB_NOTDIRTY in
++       addr_write), and uc_hook_add/uc_hook_del flush the TLB. */
++    return false;
+ }
+ 
+ #endif /* TCG_H */
+diff --git a/uc.c b/uc.c
+index 75b89a0..14480ae 100644
+--- a/uc.c
++++ b/uc.c
+@@ -2026,6 +2026,10 @@ uc_err uc_hook_add(uc_engine *uc, uc_hook *hh, int type, void *callback,
+     // TODO: return an error?
+     if (hook->refs == 0) {
+         free(hook);
++    } else if (type & (UC_HOOK_MEM_READ | UC_HOOK_MEM_READ_AFTER |
++                       UC_HOOK_MEM_WRITE)) {
++        // hookmem-pages: the TLB marks the hooked pages, rebuild it
++        uc->tcg_flush_tlb(uc);
+     }
+ 
+     restore_jit_state(uc);
+@@ -2036,6 +2040,7 @@ UNICORN_EXPORT
+ uc_err uc_hook_del(uc_engine *uc, uc_hook hh)
+ {
+     int i;
++    bool flush = false;
+     struct hook *hook = (struct hook *)hh;
+ 
+     UC_INIT(uc);
+@@ -2053,8 +2058,16 @@ uc_err uc_hook_del(uc_engine *uc, uc_hook hh)
+             hook->to_delete = true;
+             uc->hooks_count[i]--;
+             hook_append(&uc->hooks_to_del, hook);
++            if (i == UC_HOOK_MEM_READ_IDX || i == UC_HOOK_MEM_READ_AFTER_IDX ||
++                i == UC_HOOK_MEM_WRITE_IDX) {
++                flush = true;
++            }
+         }
+     }
++    if (flush) {
++        // hookmem-pages: the TLB marks the hooked pages, rebuild it
++        uc->tcg_flush_tlb(uc);
++    }
+ 
+     restore_jit_state(uc);
+     return UC_ERR_OK;
