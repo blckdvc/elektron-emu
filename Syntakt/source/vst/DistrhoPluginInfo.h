@@ -20,6 +20,8 @@
 #define DISTRHO_PLUGIN_IS_SYNTH        1
 #define DISTRHO_PLUGIN_NUM_INPUTS      0
 #define DISTRHO_PLUGIN_NUM_OUTPUTS     6
+// solo AU: oltre alle uscite separate, lo stereo del Main (Logic, GarageBand)
+#define DISTRHO_PLUGIN_EXTRA_IO        { 0, 2 },
 #define DISTRHO_PLUGIN_WANT_DIRECT_ACCESS 1
 #define DISTRHO_PLUGIN_WANT_LATENCY    1
 #define DISTRHO_PLUGIN_WANT_MIDI_INPUT 1
