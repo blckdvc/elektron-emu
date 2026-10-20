@@ -16,6 +16,7 @@
 #include "DriveModel.hpp"
 #include "Strings.hpp"
 #include "panel_layout.hpp"
+#include "SeqView.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -140,6 +141,31 @@ struct PickResult {
     std::vector<std::string> paths;
 };
 
+// the keys of the Digitone II for the sequencer view (SeqView.hpp): codes of the
+// panel layout JSON, read on the panel photo
+SeqSpec seqSpec()
+{
+    static const char* const kNames[16] = {"Track 1", "Track 2", "Track 3", "Track 4", "Track 5", "Track 6", "Track 7", "Track 8",
+                                           "Track 9", "Track 10", "Track 11", "Track 12", "Track 13", "Track 14", "Track 15", "Track 16"};
+    static const char* const kPages[6] = {"TRIG", "SYN", "FLTR", "AMP", "FX", "MOD"};
+    static const char* const kEnc[8] = {"A", "B", "C", "D", "E", "F", "G", "H"};
+    SeqSpec s;
+    s.title = "Digitone II";
+    s.tracks = 16;
+    for (int i = 0; i < 16; ++i) { s.trackNames[i] = kNames[i]; s.trig[i] = 25 + i; }
+    s.nPageKeys = 6;
+    for (int i = 0; i < 6; ++i) { s.pageKeys[i] = 1 + i; s.pageNames[i] = kPages[i]; }
+    s.nEnc = 8;
+    for (int i = 0; i < 8; ++i) { s.enc[i] = 1 + i; s.encNames[i] = kEnc[i]; }
+    s.data = 9;
+    s.func = 17; s.trk = 16; s.rec = 19; s.play = 20; s.stop = 21; s.page = 22;
+    s.yes = 10; s.no = 12; s.up = 11; s.down = 14; s.left = 13; s.right = 15;
+    s.select = SeqSpec::kTrkTrig;
+    s.nPageLeds = 8;
+    s.screenMask = 1;
+    return s;
+}
+
 } // namespace
 
 class DigitoneUI : public UI, public IdleCallback {
@@ -164,6 +190,19 @@ public:
                 if (rp && dnplat::fileExists(r)) fPhotoPath = r.string();
             }
         }
+        SeqHost host;
+        host.send = [this](int kind, int code, int arg) { send(kind, code, arg); };
+        host.keyLevel = [this](int code) -> float {
+            for (const auto& m : dtl::kLedToControl) if (m.code == code) return float(brightness(fLeds[m.led]));
+            return 0.0f;
+        };
+        host.pageLevel = [this](int i) -> float {
+            if (i < 0 || i >= int(sizeof dtl::kPageLeds / sizeof dtl::kPageLeds[0])) return 0.0f;
+            const uint8_t v = fLeds[dtl::kPageLeds[i]];
+            return (v >> 4) ? 1.0f : ((v & 0x0F) > 1 ? 0.3f : 0.0f);
+        };
+        host.screen = [this]() -> const uint8_t* { return fScreen; };
+        fSeq.reset(new SeqView(seqSpec(), host));
         zoomTo(loadZoom(), false);
         addIdleCallback(this, 40);
     }
@@ -205,6 +244,14 @@ protected:
         rect(0, 0, W, H);
         fillColor(Color(dtl::kBackground.r, dtl::kBackground.g, dtl::kBackground.b));
         fill();
+
+        if (fSeqMode) {                                    // la vista sequencer (SeqView.hpp)
+            fSeq->draw(*this, 0, 0, areaW(), H - fStatusH);
+            drawOverlay();
+            drawStatusBar(areaW(), H);
+            drawDrive(W, H);
+            return;
+        }
 
         const float pw = dtl::kPanelW * fS, ph = dtl::kPanelH * fS;
         if (fPhoto.isValid()) {
@@ -255,6 +302,7 @@ protected:
             text(px(dtl::kVolX), py(dtl::kVolY + dtl::kVolR + dtl::kVolTextDY), t.c_str(), nullptr);
         }
 
+        SeqView::drawToggle(*this, 8 * float(getScaleFactor()), 8 * float(getScaleFactor()), float(getScaleFactor()));
         drawOverlay();
         drawStatusBar(areaW(), H);
         drawDrive(W, H);
@@ -274,6 +322,13 @@ protected:
             const int z = zoomHit(x, y);
             if (z >= 0) { zoomTo(kZooms[z], true); return true; }
             if (gripHit(x, y)) { fGrip = true; fGripX = x; fGripW = areaW(); return true; }
+            const float seqSf = float(getScaleFactor());
+            if (fSeqMode) {
+                if (fSeq->mouse(true, x, y, nowMs()) == SeqView::kToPanel) fSeqMode = false;
+                repaint();
+                return true;
+            }
+            if (SeqView::toggleHit(x, y, 8 * seqSf, 8 * seqSf, seqSf)) { fSeqMode = true; repaint(); return true; }
             const float qx = (x - fOffX) / fS, qy = (y - fOffY) / fS;
             Hit h = hit(qx, qy);
             fDown = h;
@@ -293,6 +348,7 @@ protected:
         }
         // rilascio
         if (fGrip) { fGrip = false; saveZoom(currentZoom()); return true; }
+        if (fSeqMode) { fSeq->mouse(false, x, y, nowMs()); repaint(); return true; }
         if (!fDown.active) return false;
         const Hit d = fDown;
         fDown.active = false;
@@ -319,6 +375,12 @@ protected:
             return true;
         }
         if (x >= areaW()) { driveMotion(x, y); return true; }
+        if (fSeqMode) {
+            if (fSeq->motion(x, y)) repaint();
+            const bool over = gripHit(x, y) || zoomHit(x, y) >= 0;
+            if (over != fHand) { fHand = over; setCursor(over ? kMouseCursorHand : kMouseCursorArrow); }
+            return true;
+        }
         const float qx = (x - fOffX) / fS, qy = (y - fOffY) / fS;
         if (!fDown.active || fDown.kind == 0) {
             const bool over = hit(qx, qy).active || zoomHit(x, y) >= 0 || gripHit(x, y) || overlayHit(x, y) >= 0;
@@ -344,6 +406,11 @@ protected:
     {
         if (ev.pos.getX() >= areaW()) {
             fDriveScroll = std::max(0, fDriveScroll - int(std::lround(ev.delta.getY() * 3)));
+            repaint();
+            return true;
+        }
+        if (fSeqMode) {
+            if (!fSeq->scroll(ev.pos.getX(), ev.pos.getY(), float(ev.delta.getY()), (ev.mod & kModifierShift) != 0)) return false;
             repaint();
             return true;
         }
@@ -388,7 +455,8 @@ protected:
         const double t = nowMs();
         bool dirty = false;
         const uint64_t v = fPlugin->copyScreen(fScreen, fLeds);
-        if (v != fVersion) { fVersion = v; fScreenDirty = true; dirty = true; }
+        if (v != fVersion) { fVersion = v; fScreenDirty = true; fSeq->screenChanged(); dirty = true; }
+        if (fSeq->tick(t)) dirty = true;
         if (fReleaseLatchedAt > 0 && t >= fReleaseLatchedAt) {
             fReleaseLatchedAt = 0;
             for (int c : fLatched) send(1, c);
@@ -1261,6 +1329,8 @@ private:
     }
 
     DigitonePlugin* fPlugin = nullptr;
+    std::unique_ptr<SeqView> fSeq;
+    bool fSeqMode = true;                                  // la vista sequencer all'apertura
     NanoImage fPhoto, fScreenImg;
     std::string fPhotoPath;
     std::map<std::string, std::unique_ptr<NanoImage>> fGlow;

@@ -23,6 +23,7 @@
 #include "RytmPaths.hpp"
 #include "DriveModel.hpp"
 #include "panel_layout.hpp"
+#include "SeqView.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -131,6 +132,32 @@ LedLook padRGB(uint8_t r, uint8_t g, uint8_t b)
     return {{c(r), c(g), c(b)}, double(top) / 15.0};
 }
 
+// the keys of the Analog Rytm MKII for the sequencer view (SeqView.hpp): codes of the
+// panel layout JSON, read on the panel photo
+SeqSpec seqSpec()
+{
+    static const char* const kNames[12] = {"BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB"};
+    static const char* const kPages[6] = {"TRIG", "SRC", "SMPL", "FLTR", "AMP", "LFO"};
+    static const char* const kEnc[8] = {"A", "B", "C", "D", "E", "F", "G", "H"};
+    SeqSpec s;
+    s.title = "Analog Rytm MKII";
+    s.tracks = 12;
+    for (int i = 0; i < 12; ++i) s.trackNames[i] = kNames[i];
+    for (int i = 0; i < 8; ++i) { s.trig[i] = 25 + i; s.trig[8 + i] = 17 + i; }
+    s.nPageKeys = 6;
+    for (int i = 0; i < 6; ++i) { s.pageKeys[i] = 43 + i; s.pageNames[i] = kPages[i]; }
+    s.nEnc = 8;
+    for (int i = 0; i < 8; ++i) { s.enc[i] = 1 + i; s.encNames[i] = kEnc[i]; }
+    s.data = 9;
+    s.func = 54; s.trk = 55; s.rec = 13; s.play = 14; s.stop = 15; s.page = 16;
+    s.yes = 41; s.no = 33; s.up = 42; s.down = 35; s.left = 34; s.right = 36;
+    s.select = SeqSpec::kTrkPad;                                   // TRK + pad, pad 0 = BD
+    s.padBase = 0;
+    s.nPageLeds = 4;
+    s.screenMask = 1;
+    return s;
+}
+
 } // namespace
 
 class RytmUI : public UI, public IdleCallback {
@@ -147,6 +174,18 @@ public:
             fPhotoPath = fPlugin->photoPath();
         }
         applyConstraints();
+        SeqHost host;
+        host.send = [this](int kind, int code, int arg) { send(kind, code, arg); };
+        host.keyLevel = [this](int code) -> float {
+            for (const auto& m : arl::kLedToControl) if (m.code == code) return float(ledColour(fLit[m.led]).level);
+            return 0.0f;
+        };
+        host.pageLevel = [this](int i) -> float {
+            if (i < 0 || i >= int(sizeof arl::kPageLeds / sizeof arl::kPageLeds[0])) return 0.0f;
+            return float(ledColour(fLit[arl::kPageLeds[i]]).level);
+        };
+        host.screen = [this]() -> const uint8_t* { return fScreen; };
+        fSeq.reset(new SeqView(seqSpec(), host));
         zoomTo(loadZoom(), false);
         addIdleCallback(this, 40);
     }
@@ -188,6 +227,14 @@ protected:
         rect(0, 0, W, H);
         fillColor(Color(arl::kBackground.r, arl::kBackground.g, arl::kBackground.b));
         fill();
+
+        if (fSeqMode) {                                    // la vista sequencer (SeqView.hpp)
+            fSeq->draw(*this, 0, 0, areaW(), H - fStatusH);
+            drawOverlay();
+            drawStatusBar(areaW(), H);
+            drawDrive(W, H);
+            return;
+        }
 
         // il pannello e' la parte `view` della foto: tutto il resto si taglia
         const float pw = arl::kPanelW * fS, ph = arl::kPanelH * fS;
@@ -238,6 +285,7 @@ protected:
         if (fBig) drawScreenAndBezel();
         resetScissor();
 
+        SeqView::drawToggle(*this, 8 * float(getScaleFactor()), 8 * float(getScaleFactor()), float(getScaleFactor()));
         drawOverlay();
         drawStatusBar(areaW(), H);
         drawDrive(W, H);
@@ -257,6 +305,13 @@ protected:
             if (z >= 0) { zoomTo(kZooms[z], true); return true; }
             if (gripHit(x, y)) { fGrip = true; fGripX = x; fGripW = areaW(); return true; }
             if (overlayShown() && overlayClick(x, y)) return true;      // la scheda sopra il pannello
+            const float seqSf = float(getScaleFactor());
+            if (fSeqMode) {
+                if (fSeq->mouse(true, x, y, nowMs()) == SeqView::kToPanel) fSeqMode = false;
+                repaint();
+                return true;
+            }
+            if (SeqView::toggleHit(x, y, 8 * seqSf, 8 * seqSf, seqSf)) { fSeqMode = true; repaint(); return true; }
             const float qx = qxOf(x), qy = qyOf(y);
             if (onScreen(qx, qy)) {                                    // clic sullo schermo: grande/piccolo
                 fBig = !fBig;
@@ -293,6 +348,7 @@ protected:
         }
         // rilascio
         if (fGrip) { fGrip = false; saveZoom(currentZoom()); return true; }
+        if (fSeqMode) { fSeq->mouse(false, x, y, nowMs()); repaint(); return true; }
         if (!fDown.active) return false;
         const Hit d = fDown;
         fDown.active = false;
@@ -321,6 +377,12 @@ protected:
             return true;
         }
         if (x >= areaW()) { driveMotion(x, y); return true; }
+        if (fSeqMode) {
+            if (fSeq->motion(x, y)) repaint();
+            const bool over = gripHit(x, y) || zoomHit(x, y) >= 0;
+            if (over != fHand) { fHand = over; setCursor(over ? kMouseCursorHand : kMouseCursorArrow); }
+            return true;
+        }
         const float qx = qxOf(x), qy = qyOf(y);
         if (!fDown.active || fDown.kind == 0 || fDown.kind == 3) {
             const bool over = hit(qx, qy).active || padAt(qx, qy) || onScreen(qx, qy) || zoomHit(x, y) >= 0 || gripHit(x, y) ||
@@ -347,6 +409,11 @@ protected:
     {
         if (ev.pos.getX() >= areaW()) {
             fDriveScroll = std::max(0, fDriveScroll - int(std::lround(ev.delta.getY() * 3)));
+            repaint();
+            return true;
+        }
+        if (fSeqMode) {
+            if (!fSeq->scroll(ev.pos.getX(), ev.pos.getY(), float(ev.delta.getY()), (ev.mod & kModifierShift) != 0)) return false;
             repaint();
             return true;
         }
@@ -399,7 +466,8 @@ protected:
         const double t = nowMs();
         bool dirty = false;
         const uint64_t v = fPlugin->copyScreen(fScreen, fLit, fPads);
-        if (v != fVersion) { fVersion = v; fScreenDirty = true; dirty = true; }
+        if (v != fVersion) { fVersion = v; fScreenDirty = true; fSeq->screenChanged(); dirty = true; }
+        if (fSeq->tick(t)) dirty = true;
         if (fReleaseLatchedAt > 0 && t >= fReleaseLatchedAt) {
             fReleaseLatchedAt = 0;
             for (int c : fLatched) send(1, c);
@@ -1267,6 +1335,8 @@ private:
     }
 
     RytmPlugin* fPlugin = nullptr;
+    std::unique_ptr<SeqView> fSeq;
+    bool fSeqMode = true;                                  // la vista sequencer all'apertura
     NanoImage fPhoto, fScreenImg;
     std::string fPhotoPath;
     std::map<std::string, std::unique_ptr<NanoImage>> fGlow;

@@ -28,6 +28,7 @@
 #include "CyclesPlugin.hpp"
 #include "panel_layout.hpp"
 #include "PhotoLayout.hpp"
+#include "SeqView.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -151,6 +152,36 @@ std::vector<std::vector<std::pair<int, float>>> boxWeights(int n, int out)
     return w;
 }
 
+// the keys of the Model:Cycles for the sequencer view (SeqView.hpp): codes of the
+// panel layout JSON, read on the panel photo
+SeqSpec seqSpec()
+{
+    static const char* const kNames[6] = {"Track 1", "Track 2", "Track 3", "Track 4", "Track 5", "Track 6"};
+    static const char* const kKeysN[8] = {"MACHINES", "PUNCH", "GATE", "LFO", "RETRIG", "PATTERN", "TEMPO", "SETTINGS"};
+    static const int kKeyCodes[8] = {5, 6, 7, 8, 4, 3, 14, 13};
+    static const char* const kKnobN[12] = {"PITCH", "DECAY", "COLOR", "SHAPE", "SWEEP", "CONTOUR",
+                                           "DELAY", "REVERB", "LFO SPD", "VOL+DIST", "SWING", "CHANCE"};
+    static const int kKnobCodes[12] = {12, 0, 1, 2, 13, 4, 5, 6, 14, 8, 9, 10};    // "knobs" of mc_panel.json
+    SeqSpec s;
+    s.title = "Model:Cycles";
+    s.tracks = 6;
+    for (int i = 0; i < 6; ++i) s.trackNames[i] = kNames[i];
+    for (int i = 0; i < 16; ++i) s.trig[i] = 16 + i;
+    s.nPageKeys = 8;
+    s.pagesTitle = "KEYS";
+    for (int i = 0; i < 8; ++i) { s.pageKeys[i] = kKeyCodes[i]; s.pageNames[i] = kKeysN[i]; }
+    s.nEnc = 12;
+    for (int i = 0; i < 12; ++i) { s.enc[i] = kKnobCodes[i]; s.encNames[i] = kKnobN[i]; }
+    s.data = mcl::kDataEnc;
+    s.func = 1; s.trk = 2; s.rec = 9; s.play = 10; s.stop = 11; s.page = 15;
+    s.no = 12;                                                     // BACK
+    s.select = SeqSpec::kTrkPad;                                   // TRACK + pad 1..6
+    s.padBase = 1;
+    s.nPageLeds = 4;
+    s.screenMask = 0xFF;
+    return s;
+}
+
 } // namespace
 
 class CyclesUI : public UI, public IdleCallback {
@@ -172,6 +203,18 @@ public:
             fFolder = fPlugin->firmwareFolder();
         }
         applyConstraints();
+        SeqHost host;
+        host.send = [this](int kind, int code, int arg) { send(kind, code, arg); };
+        host.keyLevel = [this](int code) -> float {
+            for (const auto& k : mcl::kKeyLeds) if (k.code == code) return lit(k.led) ? 1.0f : 0.0f;
+            return 0.0f;
+        };
+        host.pageLevel = [this](int i) -> float {
+            if (i < 0 || i >= int(sizeof mcl::kPageLedIds / sizeof mcl::kPageLedIds[0])) return 0.0f;
+            return lit(mcl::kPageLedIds[i]) ? 1.0f : 0.0f;
+        };
+        host.screen = [this]() -> const uint8_t* { return fScreen; };
+        fSeq.reset(new SeqView(seqSpec(), host));
         zoomTo(loadZoom(), false);
         addIdleCallback(this, 33);
     }
@@ -213,6 +256,13 @@ protected:
         fillColor(Color(mcl::kBackground.r, mcl::kBackground.g, mcl::kBackground.b));
         fill();
 
+        if (fSeqMode) {                                    // la vista sequencer (SeqView.hpp)
+            fSeq->draw(*this, 0, 0, W, H - fStatusH);
+            drawCard();
+            drawBar(W, H);
+            return;
+        }
+
         if (fPhoto.isValid()) {
             beginPath();
             rect(fOffX, fOffY, kViewW * fS, kViewH * fS);
@@ -225,6 +275,7 @@ protected:
         drawLeds();
         drawOutlines();
         drawVolume();
+        SeqView::drawToggle(*this, 8 * float(getScaleFactor()), 8 * float(getScaleFactor()), float(getScaleFactor()));
         drawCard();
         drawBar(W, H);
     }
@@ -237,6 +288,7 @@ protected:
         if (!ev.press) {
             if (ev.button != 1) return false;
             if (fGrip) { fGrip = false; saveZoom(currentZoom()); return true; }
+        if (fSeqMode) { fSeq->mouse(false, x, y, nowMs()); repaint(); return true; }
             return mouseUp();
         }
         // la riga in basso: zoom e maniglia (anche con la scheda del firmware)
@@ -249,6 +301,13 @@ protected:
             if (ev.button == 1) cardClick(x, y);
             return true;
         }
+            const float seqSf = float(getScaleFactor());
+            if (fSeqMode) {
+                if (fSeq->mouse(true, x, y, nowMs()) == SeqView::kToPanel) fSeqMode = false;
+                repaint();
+                return true;
+            }
+            if (SeqView::toggleHit(x, y, 8 * seqSf, 8 * seqSf, seqSf)) { fSeqMode = true; repaint(); return true; }
         if (!running() || y >= getHeight() - fStatusH) return false;
         if (ev.button == 2 || ev.button == 3 || (ev.button == 1 && (ev.mod & kModifierControl))) {
             latch(qx, qy);
@@ -266,6 +325,12 @@ protected:
             const double sf = getScaleFactor();
             const float w = std::max<float>(kViewW * 0.4f * sf, fGripW + (x - fGripX));
             zoomTo(w / (kViewW * sf), false);
+            return true;
+        }
+        if (fSeqMode) {
+            if (fSeq->motion(x, y)) repaint();
+            const bool over = gripHit(x, y) || zoomHit(x, y) >= 0;
+            if (over != fHand) { fHand = over; setCursor(over ? kMouseCursorHand : kMouseCursorArrow); }
             return true;
         }
         const float qx = (x - fOffX) / fS, qy = (y - fOffY) / fS;
@@ -288,6 +353,11 @@ protected:
 
     bool onScroll(const ScrollEvent& ev) override
     {
+        if (fSeqMode) {
+            if (!fSeq->scroll(ev.pos.getX(), ev.pos.getY(), float(ev.delta.getY()), (ev.mod & kModifierShift) != 0)) return false;
+            repaint();
+            return true;
+        }
         if (!running()) return false;
         const float qx = (ev.pos.getX() - fOffX) / fS, qy = (ev.pos.getY() - fOffY) / fS;
         const Hit h = hitAt(qx, qy);
@@ -362,8 +432,10 @@ protected:
             fVersion = v;
             fScreenDirty = true;
             applyLeds();
+            fSeq->screenChanged();
             dirty = true;
         }
+        if (fSeq->tick(t)) dirty = true;
 
         // gli eventi a tempo: rilascio delle combinazioni, del push di DATA
         if (fChordDue > 0 && t >= fChordDue) { endChord(); dirty = true; }
@@ -1091,6 +1163,8 @@ private:
 
     // ------------------------------------------------------------ stato
     CyclesPlugin* fPlugin = nullptr;
+    std::unique_ptr<SeqView> fSeq;
+    bool fSeqMode = true;                                  // la vista sequencer all'apertura
 
     // la foto (caricata al primo disegno) e i LED accesi
     std::string fPhotoPath;
