@@ -10,6 +10,7 @@
 #define DISTRHO_PLUGIN_BRAND "Elektron Emu"
 #define DISTRHO_PLUGIN_NAME  "Syntakt"
 #define DISTRHO_PLUGIN_URI   "urn:simo:syntakt"
+#define DISTRHO_PLUGIN_CLAP_ID "simo.syntakt"   // serve anche all'Info.plist dell'AU
 
 #define DISTRHO_PLUGIN_BRAND_ID  Simo
 #define DISTRHO_PLUGIN_UNIQUE_ID sntk
