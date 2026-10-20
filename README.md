@@ -42,8 +42,8 @@ xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/*.vst3
 ## Audio Unit (Logic Pro, GarageBand)
 
 On Mac the same source also builds an AUv2 `.component`. From the root of the
-repo, on an Apple Silicon Mac with the Xcode command line tools, cmake, ninja
-and python3:
+repo, on an Apple Silicon Mac with the Xcode command line tools, cmake, ninja,
+pkg-config and python3 (`brew install cmake ninja pkg-config`):
 
 ```
 ./build-au-mac.sh                 # all five machines

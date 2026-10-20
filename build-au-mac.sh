@@ -22,6 +22,16 @@ set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 [[ $(uname -s) == Darwin ]] || { echo "build-au-mac: serve macOS" >&2; exit 2; }
 
+# gli strumenti: senza pkg-config il configure di Unicorn fallisce e lascia una build rotta
+missing=()
+for t in cmake ninja pkg-config python3 git; do command -v "$t" >/dev/null || missing+=("$t"); done
+xcrun --find clang >/dev/null 2>&1 || missing+=("Xcode command line tools (xcode-select --install)")
+if [[ ${#missing[@]} -gt 0 ]]; then
+  echo "build-au-mac: mancano: ${missing[*]}" >&2
+  echo "  brew install cmake ninja pkg-config python3" >&2
+  exit 2
+fi
+
 # sigla della cartella di lavoro di build-mac.sh e sottotipo AU
 # (DISTRHO_PLUGIN_UNIQUE_ID in source/vst/DistrhoPluginInfo.h; il produttore e' Simo)
 info() {
@@ -47,6 +57,12 @@ for m in "${machines[@]}"; do
   read -r tag sub < <(info "$m") || { echo "build-au-mac: macchina sconosciuta: $m" >&2; exit 2; }
   if [[ -n ${WORK_ROOT:-} ]]; then work=$WORK_ROOT/$m; else work=$HOME/.cache/$tag-vst; fi
   echo "=== $m"
+
+  # una build di Unicorn fallita a meta' (configure senza pkg-config) va rifatta da capo
+  if [[ -d $work/unicorn-work/build && ! -f $work/unicorn-mac/lib/libunicorn.a \
+        && ! -f $work/unicorn-m68k-st/lib/libunicorn.a ]]; then
+    rm -rf "$work/unicorn-work/build"
+  fi
 
   INSTALL=0 NO_INSTALL=1 "$here/$m/source/vst/scripts/build-mac.sh" "$work"
 
