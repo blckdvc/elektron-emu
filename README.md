@@ -41,7 +41,16 @@ xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/*.vst3
 
 ## Audio Unit (Logic Pro, GarageBand)
 
-On Mac the same source also builds an AUv2 `.component`. From the root of the
+Each `plugin/mac` folder also has the Audio Unit (`.component`, Apple Silicon).
+Copy it to `~/Library/Audio/Plug-Ins/Components`, unblock it once and check
+that Logic sees it:
+
+```
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/*.component
+killall -9 AudioComponentRegistrar; auval -a | grep Simo
+```
+
+To build them yourself: on Mac the same source also builds the `.component`. From the root of the
 repo, on an Apple Silicon Mac with the Xcode command line tools, cmake, ninja,
 pkg-config and python3 (`brew install cmake ninja pkg-config`):
 
