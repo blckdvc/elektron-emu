@@ -235,6 +235,8 @@ public:
             return float(ledLevel(fLeds[led], led));
         };
         host.screen = [this]() -> const uint8_t* { return fScreen; };
+        host.setLoop = [this](int page) { if (fPlugin) fPlugin->setLoopPage(page); };
+        host.getLoop = [this]() -> int { return fPlugin ? fPlugin->loopPage() : -1; };
         fSeq.reset(new SeqView(seqSpec(), host));
         fView.load(seqSpec().memo);
         applyView();
@@ -416,7 +418,7 @@ protected:
             return true;
         }
         if (fSeqMode) {
-            if (fSeq->motion(x, y)) repaint();
+            if (fSeq->motion(x, y, 0, (ev.mod & kModifierShift) != 0)) repaint();
             const bool over = gripHit(x, y) || zoomHit(x, y) >= 0;
             if (over != fHand) { fHand = over; setCursor(over ? kMouseCursorHand : kMouseCursorArrow); }
             return true;

@@ -54,4 +54,35 @@ inline size_t read(dt_machine* m, uint8_t* out, size_t cap)
     return sizeof d;
 }
 
+// Page loop (dt_rt_set_seq_hook, every 2 slices on the engine thread): while it plays,
+// a track that is about to leave page `page` gets the first step of the page as its
+// next step. A track that never reached the page (shorter than it) is left alone.
+// page < 0: off.
+static const uint32_t kNext[] = {0x40a78860};   // u8 per track, the next step
+static const int kLoopTracks = 6;
+
+inline void loop(dt_machine* m, int page)
+{
+    static thread_local uint8_t maxSeen[16], last[16];
+    static thread_local int pattern = -1, still = 1000;
+    uint8_t p = 0, cur[16], nxt[16];
+    if (dt_machine_mem_read(m, kPattern, &p, 1) || dt_machine_mem_read(m, kStep, cur, kLoopTracks) ||
+        dt_machine_mem_read(m, kNext[0], nxt, kLoopTracks))
+        return;
+    if (p != pattern) { pattern = p; std::memset(maxSeen, 0, sizeof maxSeen); }
+    if (std::memcmp(cur, last, kLoopTracks)) { still = 0; std::memcpy(last, cur, kLoopTracks); }
+    else if (still < 1000) ++still;
+    for (int t = 0; t < kLoopTracks; ++t) if (cur[t] > maxSeen[t]) maxSeen[t] = cur[t];
+    if (page < 0 || still > 400) return;                         // off, or stopped
+    const int lo = page * 16, hi = lo + 15;
+    bool dirty = false;
+    for (int t = 0; t < kLoopTracks; ++t) {
+        if (maxSeen[t] < lo || (nxt[t] >= lo && nxt[t] <= hi)) continue;
+        nxt[t] = uint8_t(lo);
+        dirty = true;
+    }
+    if (dirty)
+        for (uint32_t a : kNext) dt_machine_mem_write(m, a, nxt, kLoopTracks);
+}
+
 } // namespace seqmem

@@ -51,6 +51,9 @@ public:
     uint64_t copyScreen(uint8_t screen[128 * 64], uint8_t lit[128], uint8_t pads[12][3]);
     // the pattern read in the OS memory (SeqMem.hpp), false while there is none
     bool seqData(SeqData& d);
+    // the sequencer loops on one step page (0..7), -1 all the pages (SeqMem.hpp, loop)
+    void setLoopPage(int page);
+    int loopPage() const { return fLoopPage.load(); }
     void panel(int kind, int code, int arg);
     double masterVolume() const { return fMaster.load(); }
     void setMasterFromUI(double v);
@@ -109,6 +112,8 @@ private:
     std::string coldBootCachePath() const;
 
     std::atomic<dt_rt*> fRt{nullptr};
+
+    std::atomic<int> fLoopPage{-1};
     std::atomic<int> fInRun{0};
     std::atomic<double> fMaster{1.0};
     std::atomic<bool> fSync{true};

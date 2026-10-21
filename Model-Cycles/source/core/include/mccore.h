@@ -117,6 +117,7 @@ DT_API void dt_machine_counters(dt_machine *m, dt_counters *out);
    (lo stesso calcolo di tools/dtcore_ref.py). */
 DT_API int dt_machine_digest(dt_machine *m, uint8_t out[32], uint32_t *nregions, uint64_t *nbytes);
 DT_API int dt_machine_mem_read(dt_machine *m, uint32_t addr, void *buf, size_t n);
+DT_API int dt_machine_mem_write(dt_machine *m, uint32_t addr, const void *buf, size_t n);
 
 /* ---------------------------------------------------------------- motore
  * Il thread del motore della GUI del Model:Cycles (emu/mcengine.py Engine:
@@ -222,6 +223,11 @@ DT_API uint64_t dt_rt_screen(dt_rt *rt, uint8_t out[128 * 64], uint8_t leds[8]);
 #define DT_SEQ_MAX 512
 typedef size_t (*dt_seq_reader)(dt_machine *m, uint8_t *out, size_t cap);
 DT_API void dt_rt_set_seq_reader(dt_rt *rt, dt_seq_reader fn);
+/* un'altra funzione chiamata ogni 2 giri sullo stesso thread, con l'argomento dato da
+   dt_rt_set_seq_arg (-1 all'inizio): per esempio per far girare il sequencer su una pagina */
+typedef void (*dt_seq_hook)(dt_machine *m, int arg);
+DT_API void dt_rt_set_seq_hook(dt_rt *rt, dt_seq_hook fn);
+DT_API void dt_rt_set_seq_arg(dt_rt *rt, int arg);
 /* i byte dell'ultima lettura (-> quanti, 0 se nessuna); `version` (o NULL) cambia con loro */
 DT_API size_t dt_rt_seq(dt_rt *rt, uint8_t *out, size_t cap, uint64_t *version);
 DT_API size_t dt_rt_midi_out(dt_rt *rt, uint8_t *buf, size_t max, uint32_t *offset, uint32_t frames);

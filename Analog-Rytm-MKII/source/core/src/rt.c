@@ -201,6 +201,8 @@ struct dt_rt {
     /* schermo e LED: motore -> GUI (seqlock) */
     /* pattern (vista Elektron Emu): motore -> GUI (seqlock), ogni 8 giri */
     _Atomic(dt_seq_reader) seq_fn;
+    _Atomic(dt_seq_hook) hook_fn;   /* ogni 2 giri, con hook_arg - 1 (-1: spento) */
+    _Atomic int hook_arg;
     _Atomic uint64_t sq;
     uint8_t sqbuf[DT_SEQ_MAX];
     size_t sqlen;
@@ -280,7 +282,11 @@ static void rt_seq_publish(dt_rt *rt)
     uint8_t tmp[DT_SEQ_MAX];
     size_t n;
     dt_seq_reader fn = atomic_load_explicit(&rt->seq_fn, memory_order_acquire);
-    if (!fn || (rt->sqtick++ & 7u))
+    dt_seq_hook hk = atomic_load_explicit(&rt->hook_fn, memory_order_acquire);
+    const unsigned tick = rt->sqtick++;
+    if (hk && !(tick & 1u))
+        hk(dt_engine_machine(rt->e), atomic_load_explicit(&rt->hook_arg, memory_order_relaxed) - 1);
+    if (!fn || (tick & 7u))
         return;
     n = fn(dt_engine_machine(rt->e), tmp, sizeof tmp);
     if (n > sizeof tmp)
@@ -298,6 +304,18 @@ void dt_rt_set_seq_reader(dt_rt *rt, dt_seq_reader fn)
 {
     if (rt)
         atomic_store_explicit(&rt->seq_fn, fn, memory_order_release);
+}
+
+void dt_rt_set_seq_hook(dt_rt *rt, dt_seq_hook fn)
+{
+    if (rt)
+        atomic_store_explicit(&rt->hook_fn, fn, memory_order_release);
+}
+
+void dt_rt_set_seq_arg(dt_rt *rt, int arg)
+{
+    if (rt)
+        atomic_store_explicit(&rt->hook_arg, arg + 1, memory_order_relaxed);
 }
 
 size_t dt_rt_seq(dt_rt *rt, uint8_t *out, size_t cap, uint64_t *version)

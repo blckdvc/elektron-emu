@@ -810,3 +810,8 @@ int dt_machine_mem_read(dt_machine *m, uint32_t addr, void *buf, size_t n)
 {
     return uc_mem_read(m->uc, addr, buf, n) == UC_ERR_OK ? DT_OK : DT_ERR_UNICORN;
 }
+
+int dt_machine_mem_write(dt_machine *m, uint32_t addr, const void *buf, size_t n)
+{
+    return uc_mem_write(m->uc, addr, buf, n) == UC_ERR_OK ? DT_OK : DT_ERR_UNICORN;
+}

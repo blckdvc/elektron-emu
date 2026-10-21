@@ -398,6 +398,10 @@ void DigitonePlugin::setState(const char* key, const char* value)
 void DigitonePlugin::swapEngine(dt_rt* rt)
 {
     if (rt) dt_rt_set_seq_reader(rt, seqmem::read);   // the pattern for the Elektron Emu view
+    if (rt) {
+        dt_rt_set_seq_hook(rt, seqmem::loop);                     // the page loop
+        dt_rt_set_seq_arg(rt, fLoopPage.load());
+    }
     dt_rt* old = fRt.exchange(rt);
     // run() ha caricato il vecchio puntatore prima dello scambio: si aspetta che finisca
     while (fInRun.load())
@@ -701,6 +705,12 @@ void DigitonePlugin::run(const float**, float** outputs, uint32_t frames, const 
 }
 
 // ------------------------------------------------------------------ per la vista
+void DigitonePlugin::setLoopPage(int page)
+{
+    fLoopPage.store(page);
+    if (dt_rt* rt = fRt.load()) dt_rt_set_seq_arg(rt, page);
+}
+
 bool DigitonePlugin::seqData(SeqData& d)
 {
     dt_rt* rt = fRt.load();

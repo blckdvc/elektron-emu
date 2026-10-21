@@ -93,6 +93,8 @@ struct SeqHost {
     std::function<float(int code)> keyLevel;     // LED of a key, 0..1
     std::function<float(int i)> pageLevel;       // step page LED i, 0..1
     std::function<const uint8_t*()> screen;      // 128 x 64
+    std::function<void(int page)> setLoop;       // play one step page in a loop (-1: all the pages)
+    std::function<int()> getLoop;
 };
 
 // a small file per machine for the remembered settings (view, follow)
@@ -284,6 +286,8 @@ public:
     {
         for (float& a : fAngle) a = 0;
         fFollow = seqMemoLoad("follow", fSpec.memo, 1) != 0;
+        fLoop = fHost.getLoop ? fHost.getLoop() : -1;
+        if (fLoop >= 0) fViewPage = fLoop;
     }
 
     void screenChanged() { fScreenDirty = true; }
@@ -304,7 +308,7 @@ public:
         else if (fStill < 1000) ++fStill;
         fGrid = g;
         const int s = playPos(fSel);
-        if (fFollow && s >= 0 && s / 16 != fViewPage) {   // the grid goes to the page that plays
+        if (fFollow && fLoop < 0 && s >= 0 && s / 16 != fViewPage) {   // the grid goes to the page that plays
             fViewPage = s / 16;
             return true;
         }
@@ -379,7 +383,11 @@ public:
                 toggleCell(h->index, h->code, now);
                 break;
             case kBtnMute: toggleMute(h->index, now); break;
-            case kBtnViewPage: goToPage(h->index, now); break;
+            case kBtnViewPage:
+                if (fLoop >= 0) setLoop(h->index);
+                goToPage(h->index, now);
+                break;
+            case kBtnLoop: setLoop(fLoop >= 0 ? -1 : std::max(0, fViewPage)); break;
             case kBtnKey: keyDown(h->code); break;
             case kBtnFunc: setFunc(!fFunc); fDownActive = false; break;
             case kBtnKnob: fDragY = qy; fDragAcc = 0; fDragging = h->index; break;
@@ -407,7 +415,7 @@ public:
     }
 
     // drag on a knob or on a parameter of the screen; the hover of the screen parameters
-    bool motion(float x, float y, double now = 0)
+    bool motion(float x, float y, double now = 0, bool fine = false)
     {
         const float qx = (x - fOx) / fScale, qy = (y - fOy) / fScale;
         if (fPaint) {                                    // the cells of the row under the drag
@@ -429,7 +437,7 @@ public:
             fHover = hover;
             return true;
         }
-        fDragAcc += (fDragY - qy) / 3.0f;
+        fDragAcc += (fDragY - qy) / (fine ? 8.0f : 1.5f);   // shift: fine
         fDragY = qy;
         const int steps = int(fDragAcc);
         if (steps != 0) {
@@ -443,9 +451,9 @@ public:
     {
         const Hit* h = hitAt((x - fOx) / fScale, (y - fOy) / fScale);
         if (!h || h->kind != kBtnKnob || delta == 0) return false;
-        int steps = int(std::max(-6.0f, std::min(6.0f, delta * 2)));
+        int steps = int(std::max(-16.0f, std::min(16.0f, delta * 4)));
         if (steps == 0) steps = delta > 0 ? 1 : -1;
-        if (fine) steps = steps > 0 ? 1 : -1;
+        if (fine) steps = steps > 0 ? 1 : -1;               // shift: one step
         turnKnob(h->index, steps);
         return true;
     }
@@ -475,7 +483,7 @@ private:
 
     enum Kind {
         kBtnTrack, kBtnStep, kBtnCell, kBtnMute, kBtnViewPage, kBtnKey, kBtnFunc, kBtnKnob,
-        kBtnFollow, kBtnListToggle, kBtnBank, kBtnPattern, kBtnPrevNext
+        kBtnFollow, kBtnListToggle, kBtnBank, kBtnPattern, kBtnPrevNext, kBtnLoop
     };
     struct Hit { int kind = 0, index = 0, code = 0; float x = 0, y = 0, w = 0, h = 0; };
     struct Ev { double at; int kind, code, arg; };
@@ -586,6 +594,13 @@ private:
         const int k = ((p - cur) % n + n) % n;
         for (int i = 0; i < k; ++i) queueTap(at, fSpec.page);
         fPendPage = p;
+    }
+
+    void setLoop(int p)
+    {
+        fLoop = p;
+        if (p >= 0) fViewPage = p;
+        if (fHost.setLoop) fHost.setLoop(p);
     }
 
     void goToPage(int p, double now)
@@ -904,8 +919,14 @@ private:
         if (fViewPage < 0) fViewPage = osPage();
         const int page = std::max(0, std::min(nTabs - 1, fViewPage));
 
-        // the step pages (the pages past the length of the pattern are dimmed)
-        label(vg, left + 6, 81, "TRACKS", 11, 0x9A9DA3, NanoVG::ALIGN_LEFT | NanoVG::ALIGN_MIDDLE);
+        // what plays: every page, or the selected page in a loop (then a page tab picks it)
+        {
+            char t[32];
+            if (fLoop >= 0) std::snprintf(t, sizeof t, "LOOP PAGE %d", fLoop + 1);
+            else std::snprintf(t, sizeof t, "PLAY ALL PAGES");
+            button(vg, left, 70, cells - left - 8, 22, t, fLoop >= 0 ? 1.0f : 0.0f, false, 11);
+            addHit(kBtnLoop, 0, 0, left, 70, cells - left - 8, 22);
+        }
         const int have = osPages();
         const float tw = (right - cells - (nTabs - 1) * 4) / nTabs;
         for (int p = 0; p < nTabs; ++p) {
@@ -918,6 +939,11 @@ private:
             vg.roundedRect(x, 70, tw, 22, 5);
             vg.fillColor(rgb(cur ? 0x3A3D44 : 0x222429));
             vg.fill();
+            if (p == fLoop) {                                         // the page that loops
+                vg.strokeColor(rgb(0xF2A93B));
+                vg.strokeWidth(1.5f);
+                vg.stroke();
+            }
             label(vg, x + tw / 2, 81, s, 11, cur ? 0xECEAE4 : (p < have ? 0xA3A6AD : 0x5A5D63), NanoVG::ALIGN_CENTER | NanoVG::ALIGN_MIDDLE);
             addHit(kBtnViewPage, p, 0, x, 70, tw, 22);
         }
@@ -976,7 +1002,7 @@ private:
                 addHit(kBtnCell, t, s, x, y + 1.5f, cw, rowH - 3);
             }
         }
-        label(vg, left, 622, "Click or drag along a row to add or remove trigs. M mutes the track. FOLLOW shows the page that plays.", 11, 0x7C8088,
+        label(vg, left, 622, "Click or drag along a row to add or remove trigs. M mutes. LOOP PAGE plays the selected page only.", 11, 0x7C8088,
               NanoVG::ALIGN_LEFT | NanoVG::ALIGN_MIDDLE);
     }
 
@@ -1128,7 +1154,7 @@ private:
     std::vector<Hit> fHits;
     Hit fDown;
     bool fDownActive = false, fFunc = false, fFollow = true, fListOpen = false;
-    int fStill = 1000;
+    int fStill = 1000, fLoop = -1;
     static constexpr int kHist = 12;
     float fLedHist[8][kHist] = {};
     int fHistI = 0, fHistN = 0, fPendPage = -1;

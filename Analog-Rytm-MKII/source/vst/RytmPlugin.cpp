@@ -476,6 +476,10 @@ bool RytmPlugin::installFirmware(const std::string& path, std::string& error)
 void RytmPlugin::swapEngine(dt_rt* rt)
 {
     if (rt) dt_rt_set_seq_reader(rt, seqmem::read);   // the pattern for the Elektron Emu view
+    if (rt) {
+        dt_rt_set_seq_hook(rt, seqmem::loop);                     // the page loop
+        dt_rt_set_seq_arg(rt, fLoopPage.load());
+    }
     dt_rt* old = fRt.exchange(rt);
     // run() ha caricato il vecchio puntatore prima dello scambio: si aspetta che finisca
     while (fInRun.load())
@@ -689,6 +693,12 @@ void RytmPlugin::run(const float**, float** outputs, uint32_t frames, const Midi
 }
 
 // ------------------------------------------------------------------ per la vista
+void RytmPlugin::setLoopPage(int page)
+{
+    fLoopPage.store(page);
+    if (dt_rt* rt = fRt.load()) dt_rt_set_seq_arg(rt, page);
+}
+
 bool RytmPlugin::seqData(SeqData& d)
 {
     dt_rt* rt = fRt.load();
