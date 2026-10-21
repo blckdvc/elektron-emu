@@ -198,6 +198,12 @@ SeqSpec seqSpec()
     s.ptnSel = SeqSpec::kPtnArrows;                                // PTN held, LEFT/RIGHT bank, trig
     s.ptnKey = 34;
     s.nBanks = 8;
+    {                                                              // FUNC + key, flat
+        static const char* const kFn[] = {"QUANTIZE", "MACHINE", "DELAY", "REVERB", "MIXER", "PRESETS", "ROUTING", "TAP TEMPO", "PAGE SETUP", "CLICK", "SOUND", "COPY", "CLEAR", "PASTE"};
+        static const int kFk[] = {19, 20, 22, 23, 24, 25, 26, 27, 32, 34, 35, 36, 37, 38};
+        s.nFuncs = int(sizeof kFk / sizeof kFk[0]);
+        for (int i = 0; i < s.nFuncs; ++i) { s.funcNames[i] = kFn[i]; s.funcKeys[i] = kFk[i]; }
+    }
     s.memo = "syntakt";
     return s;
 }

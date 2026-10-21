@@ -165,6 +165,12 @@ SeqSpec seqSpec()
     s.nBanks = 8;
     s.knobX0 = 0;                                                  // no strip on the left
     s.knobYMid = 33;
+    {                                                              // FUNC + key, flat
+        static const char* const kFn[] = {"PTN: SEQUENTIAL", "PTN: DIR. START", "PTN: DIR. JUMP", "PTN: TEMP JUMP", "CHAIN", "MIDI", "TRIG MUTES", "ACCENT", "SWING", "SLIDE", "COPY", "CLEAR", "PASTE"};
+        static const int kFk[] = {1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15};
+        s.nFuncs = int(sizeof kFk / sizeof kFk[0]);
+        for (int i = 0; i < s.nFuncs; ++i) { s.funcNames[i] = kFn[i]; s.funcKeys[i] = kFk[i]; }
+    }
     s.memo = "rytm";
     return s;
 }

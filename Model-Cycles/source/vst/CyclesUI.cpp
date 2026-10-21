@@ -184,6 +184,12 @@ SeqSpec seqSpec()
     s.ptnKey = 3;
     s.nBanks = 6;
     s.screenKnobs = false;                                         // the knobs are not on the screen
+    {                                                              // FUNC + key, flat
+        static const char* const kFn[] = {"SOUNDS", "LFO", "PTN TEMPO", "COPY", "CLEAR", "PASTE"};
+        static const int kFk[] = {5, 8, 14, 9, 10, 11};
+        s.nFuncs = int(sizeof kFk / sizeof kFk[0]);
+        for (int i = 0; i < s.nFuncs; ++i) { s.funcNames[i] = kFn[i]; s.funcKeys[i] = kFk[i]; }
+    }
     s.memo = "cycles";
     return s;
 }
