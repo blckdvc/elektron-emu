@@ -169,8 +169,8 @@ SeqSpec seqSpec()
     s.ptnKey = 23;
     s.nBanks = 8;
     {                                                              // FUNC + key, flat
-        static const char* const kFn[] = {"QUANTIZE", "MACHINE", "SETUP", "EUCLID", "DELAY", "COMPRESSOR", "PERFORM KIT", "PRESETS", "TAP TEMPO", "KEYBOARD", "PAGE SETUP", "SONG", "UNISON", "ARPEGGIATOR", "NOTE EDIT", "COPY", "CLEAR", "PASTE"};
-        static const int kFk[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 18, 22, 24, 50, 51, 53, 19, 20, 21};
+        static const char* const kFn[] = {"SETTINGS", "QUANTIZE", "MACHINE", "SETUP", "EUCLID", "DELAY", "COMPRESSOR", "PERFORM KIT", "PRESETS", "TAP TEMPO", "KEYBOARD", "PAGE SETUP", "SONG", "UNISON", "ARPEGGIATOR", "NOTE EDIT", "COPY", "CLEAR", "PASTE"};
+        static const int kFk[] = {-8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 18, 22, 24, 50, 51, 53, 19, 20, 21};
         s.nFuncs = int(sizeof kFk / sizeof kFk[0]);
         for (int i = 0; i < s.nFuncs; ++i) { s.funcNames[i] = kFn[i]; s.funcKeys[i] = kFk[i]; }
     }

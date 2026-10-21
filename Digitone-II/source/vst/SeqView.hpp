@@ -78,7 +78,8 @@ struct SeqSpec {
     int bankKeys[8] = {};
     int nBanks = 8;
     const char* memo = "";                   // file name for the remembered settings
-    // the FUNC + key functions, flat: a button each (FUNC is held, the key tapped)
+    // the FUNC + key functions, flat: a button each (FUNC is held, the key tapped;
+    // a negative code: that key alone, for the menus with a key of their own)
     int nFuncs = 0;
     const char* funcNames[24] = {};
     int funcKeys[24] = {};
@@ -403,7 +404,8 @@ public:
             case kBtnFuncKey: {
                 double at = queueStart(now);
                 if (fFunc) setFunc(false);
-                queue(at, 0, fSpec.func); queueTap(at, h->code); queue(at, 1, fSpec.func);
+                if (h->code < 0) queueTap(at, -h->code);                 // a key of its own (no FUNC)
+                else { queue(at, 0, fSpec.func); queueTap(at, h->code); queue(at, 1, fSpec.func); }
                 break;
             }
             case kBtnKey: keyDown(h->code); break;

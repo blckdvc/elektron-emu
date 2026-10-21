@@ -137,15 +137,16 @@ LedLook padRGB(uint8_t r, uint8_t g, uint8_t b)
 SeqSpec seqSpec()
 {
     static const char* const kNames[12] = {"BD", "SD", "RS", "CP", "BT", "LT", "MT", "HT", "CH", "OH", "CY", "CB"};
-    static const char* const kPages[6] = {"TRIG", "SRC", "SMPL", "FLTR", "AMP", "LFO"};
+    static const char* const kPages[7] = {"TRIG", "SRC", "SMPL", "FLTR", "AMP", "LFO", "FX TRACK"};
     static const char* const kEnc[8] = {"A", "B", "C", "D", "E", "F", "G", "H"};
     SeqSpec s;
     s.title = "Analog Rytm MKII";
     s.tracks = 12;
     for (int i = 0; i < 12; ++i) s.trackNames[i] = kNames[i];
     for (int i = 0; i < 8; ++i) { s.trig[i] = 25 + i; s.trig[8 + i] = 17 + i; }
-    s.nPageKeys = 6;
+    s.nPageKeys = 7;
     for (int i = 0; i < 6; ++i) { s.pageKeys[i] = 43 + i; s.pageNames[i] = kPages[i]; }
+    s.pageKeys[6] = 7; s.pageNames[6] = kPages[6];                // FX: delay, reverb, dist, comp on the pages
     s.nEnc = 8;
     for (int i = 0; i < 8; ++i) { s.enc[i] = 1 + i; s.encNames[i] = kEnc[i]; }
     s.data = 9;
@@ -168,8 +169,8 @@ SeqSpec seqSpec()
     s.knobY1 = 55;                                                 // the status bar below: the level
     s.levelZone[0] = 0; s.levelZone[1] = 55; s.levelZone[2] = 64; s.levelZone[3] = 64;
     {                                                              // FUNC + key, flat
-        static const char* const kFn[] = {"PTN: SEQUENTIAL", "PTN: DIR. START", "PTN: DIR. JUMP", "PTN: TEMP JUMP", "CHAIN", "MIDI", "TRIG MUTES", "ACCENT", "SWING", "SLIDE", "COPY", "CLEAR", "PASTE"};
-        static const int kFk[] = {1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15};
+        static const char* const kFn[] = {"SETTINGS", "SAMPLING", "TEMPO", "PTN: SEQUENTIAL", "PTN: DIR. START", "PTN: DIR. JUMP", "PTN: TEMP JUMP", "CHAIN", "MIDI", "TRIG MUTES", "ACCENT", "SWING", "SLIDE", "COPY", "CLEAR", "PASTE"};
+        static const int kFk[] = {-53, -52, -37, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15};
         s.nFuncs = int(sizeof kFk / sizeof kFk[0]);
         for (int i = 0; i < s.nFuncs; ++i) { s.funcNames[i] = kFn[i]; s.funcKeys[i] = kFk[i]; }
     }
