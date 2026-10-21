@@ -495,6 +495,7 @@ protected:
                 g.playing = sd.playing != 0;
                 for (int i = 0; i < 16; ++i) {
                     g.trigs[i] = sd.trigs[i];
+                    g.trigs2[i] = sd.trigs2[i];
                     g.step[i] = sd.step[i] == 0xff ? -1 : sd.step[i];
                 }
             }

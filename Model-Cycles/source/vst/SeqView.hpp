@@ -83,7 +83,8 @@ struct SeqGrid {
     bool playing = false;
     int pattern = 0, tracks = 0;
     unsigned mutes = 0;
-    uint64_t trigs[16] = {};
+    uint64_t trigs[16] = {};                 // steps 1-64
+    uint64_t trigs2[16] = {};                // steps 65-128 (Digitakt II, Digitone II)
     int step[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};   // play position, -1 none
 };
 
@@ -293,8 +294,10 @@ public:
     // the pattern from the memory; -> true if it changed (to repaint)
     bool setGrid(const SeqGrid& g)
     {
+        sampleLeds();
         const bool same = g.valid == fGrid.valid && g.playing == fGrid.playing && g.pattern == fGrid.pattern &&
                           g.mutes == fGrid.mutes && !std::memcmp(g.trigs, fGrid.trigs, sizeof g.trigs) &&
+                          !std::memcmp(g.trigs2, fGrid.trigs2, sizeof g.trigs2) &&
                           !std::memcmp(g.step, fGrid.step, sizeof g.step);
         // the positions move while it plays (and go back to 0 at STOP)
         if (std::memcmp(g.step, fGrid.step, sizeof g.step)) fStill = 0;
@@ -308,12 +311,18 @@ public:
         return !same;
     }
 
-    // playing: the positions moved lately; the step that plays on track t, modulo the pages of the pattern
+    // playing: the positions moved lately; the step that plays on track t (each track
+    // runs at its own length and speed, so the positions can differ from track to track)
     bool playing() const { return fGrid.playing || fStill < 30; }
     int playPos(int t) const
     {
-        if (!fGrid.valid || !playing() || t < 0 || t > 15 || fGrid.step[t] < 0) return -1;
-        return fGrid.step[t] % (osPages() * 16);
+        if (!fGrid.valid || !playing() || t < 0 || t > 15 || fGrid.step[t] < 0 || fGrid.step[t] >= 128) return -1;
+        return fGrid.step[t];
+    }
+    bool trigOn(int t, int s) const
+    {
+        if (t < 0 || t > 15 || s < 0 || s >= 128) return false;
+        return s < 64 ? ((fGrid.trigs[t] >> s) & 1) : ((fGrid.trigs2[t] >> (s - 64)) & 1);
     }
 
     // ------------------------------------------------------------ drawing
@@ -361,7 +370,14 @@ public:
             switch (h->kind) {
             case kBtnTrack: selectTrack(h->index, now); break;
             case kBtnStep: toggleStep(h->index, now); break;
-            case kBtnCell: toggleCell(h->index, h->code, now); break;
+            case kBtnCell:                                           // click, or click and drag on the row
+                fPaint = true;
+                fPaintTrack = h->index;
+                fPaintOn = !trigOn(h->index, h->code);
+                fPainted.assign(128, false);
+                fPainted[size_t(h->code)] = true;
+                toggleCell(h->index, h->code, now);
+                break;
             case kBtnMute: toggleMute(h->index, now); break;
             case kBtnViewPage: goToPage(h->index, now); break;
             case kBtnKey: keyDown(h->code); break;
@@ -382,6 +398,7 @@ public:
             }
             return kHandled;
         }
+        fPaint = false;
         if (!fDownActive) return kNone;
         fDownActive = false;
         if (fDown.kind == kBtnKey) keyUp(fDown.code);
@@ -390,9 +407,21 @@ public:
     }
 
     // drag on a knob or on a parameter of the screen; the hover of the screen parameters
-    bool motion(float x, float y)
+    bool motion(float x, float y, double now = 0)
     {
         const float qx = (x - fOx) / fScale, qy = (y - fOy) / fScale;
+        if (fPaint) {                                    // the cells of the row under the drag
+            const float rowY = fDown.y + fDown.h / 2;
+            const Hit* h = hitAt(qx, rowY);
+            if (h && h->kind == kBtnCell && h->index == fPaintTrack && !fPainted[size_t(h->code)]) {
+                fPainted[size_t(h->code)] = true;
+                if (trigOn(h->index, h->code) != fPaintOn) {
+                    toggleCell(h->index, h->code, now > 0 ? now : fLastNow);
+                    return true;
+                }
+            }
+            return false;
+        }
         if (fDragging < 0) {
             const Hit* h = hitAt(qx, qy);
             const int hover = h && h->kind == kBtnKnob && h->code == 1 ? h->index : -1;
@@ -424,6 +453,7 @@ public:
     // the queued key sequences (select a track, add a trig, mute, pattern); true if something was sent
     bool tick(double now)
     {
+        fLastNow = now;
         bool sent = false;
         while (!fQueue.empty() && fQueue.front().at <= now) {
             const Ev e = fQueue.front();
@@ -431,6 +461,7 @@ public:
             send(e.kind, e.code, e.arg);
             sent = true;
         }
+        if (fQueue.empty()) { fPendPage = -1; fPendRec = false; }
         return sent;
     }
 
@@ -498,7 +529,9 @@ private:
 
     void queueGridRec(double& at)
     {
-        if (fSpec.rec >= 0 && level(fSpec.rec) < 0.2f) queueTap(at, fSpec.rec);
+        if (fSpec.rec < 0 || fPendRec) return;
+        if (level(fSpec.rec) < 0.2f) queueTap(at, fSpec.rec);
+        fPendRec = true;                             // on once the queue has played
     }
 
     void toggleStep(int i, double now)
@@ -509,20 +542,39 @@ private:
         queueTap(at, fSpec.trig[i]);
     }
 
-    // the step page the OS shows (the brightest page LED) and how many pages the pattern has
+    // the page LEDs over the last half second: the page that plays blinks, the page
+    // the OS shows stays lit
+    void sampleLeds()
+    {
+        const int n = std::max(0, std::min(8, fSpec.nPageLeds));
+        for (int i = 0; i < n; ++i) fLedHist[i][fHistI] = pageLed(i);
+        fHistI = (fHistI + 1) % kHist;
+        if (fHistN < kHist) ++fHistN;
+    }
+
+    // the step page the OS shows (the LED lit the most) and how many pages the pattern has
     int osPage() const
     {
+        if (fPendPage >= 0) return fPendPage;
         int best = 0;
         float lv = -1;
-        for (int i = 0; i < fSpec.nPageLeds; ++i)
-            if (pageLed(i) > lv + 0.05f) { lv = pageLed(i); best = i; }
+        for (int i = 0; i < std::min(8, fSpec.nPageLeds); ++i) {
+            float m = 0;
+            if (fHistN == 0) m = pageLed(i);
+            else { for (int k = 0; k < fHistN; ++k) m += fLedHist[i][k]; m /= fHistN; }
+            if (m > lv + 0.02f) { lv = m; best = i; }
+        }
         return best;
     }
 
     int osPages() const
     {
         int n = 0;
-        for (int i = 0; i < fSpec.nPageLeds; ++i) if (pageLed(i) > 0.05f) n = i + 1;
+        for (int i = 0; i < std::min(8, fSpec.nPageLeds); ++i) {
+            float m = pageLed(i);
+            for (int k = 0; k < fHistN; ++k) m = std::max(m, fLedHist[i][k]);
+            if (m > 0.05f) n = i + 1;
+        }
         return std::max(1, n);
     }
 
@@ -533,6 +585,7 @@ private:
         if (fSpec.page < 0 || p >= n) return;
         const int k = ((p - cur) % n + n) % n;
         for (int i = 0; i < k; ++i) queueTap(at, fSpec.page);
+        fPendPage = p;
     }
 
     void goToPage(int p, double now)
@@ -544,7 +597,7 @@ private:
 
     void toggleCell(int t, int s, double now)
     {
-        if (t < 0 || t >= fSpec.tracks || s < 0 || s >= 64) return;
+        if (t < 0 || t >= fSpec.tracks || s < 0 || s >= 128) return;
         double at = queueStart(now);
         if (t != fSel) { queueSelect(at, t); fSel = t; }
         queuePage(at, s / 16);
@@ -847,36 +900,25 @@ private:
         const int n = std::max(1, std::min(16, fSpec.tracks));
         const float left = 18, cells = 184, right = 584, top = 102, bottom = 604;
         const float rowH = std::min(n <= 8 ? 54.0f : 31.0f, (bottom - top) / n);
-        const int osp = osPage();
-        if (fViewPage < 0) fViewPage = osp;
-        const int page = std::max(0, std::min(3, fViewPage));
+        const int nTabs = std::max(1, std::min(8, std::max(4, fSpec.nPageLeds)));
+        if (fViewPage < 0) fViewPage = osPage();
+        const int page = std::max(0, std::min(nTabs - 1, fViewPage));
 
-        // page tabs (the page the OS shows has the orange line, the page that plays a green dot)
+        // the step pages (the pages past the length of the pattern are dimmed)
         label(vg, left + 6, 81, "TRACKS", 11, 0x9A9DA3, NanoVG::ALIGN_LEFT | NanoVG::ALIGN_MIDDLE);
-        const int playStep = playPos(fSel);
-        const float tw = (right - cells - 3 * 6) / 4;
-        for (int p = 0; p < 4; ++p) {
-            const float x = cells + p * (tw + 6);
+        const int have = osPages();
+        const float tw = (right - cells - (nTabs - 1) * 4) / nTabs;
+        for (int p = 0; p < nTabs; ++p) {
+            const float x = cells + p * (tw + 4);
             char s[16];
-            std::snprintf(s, sizeof s, "%d-%d", p * 16 + 1, p * 16 + 16);
+            if (nTabs <= 4) std::snprintf(s, sizeof s, "%d-%d", p * 16 + 1, p * 16 + 16);
+            else std::snprintf(s, sizeof s, "%d", p * 16 + 1);
             const bool cur = p == page;
             vg.beginPath();
             vg.roundedRect(x, 70, tw, 22, 5);
             vg.fillColor(rgb(cur ? 0x3A3D44 : 0x222429));
             vg.fill();
-            if (p == osp) {
-                vg.beginPath();
-                vg.rect(x + 6, 89, tw - 12, 2);
-                vg.fillColor(rgb(0xF2A93B));
-                vg.fill();
-            }
-            if (playStep >= 0 && playStep / 16 == p) {
-                vg.beginPath();
-                vg.circle(x + 10, 81, 3);
-                vg.fillColor(rgb(0x6FD08C));
-                vg.fill();
-            }
-            label(vg, x + tw / 2, 81, s, 11, cur ? 0xECEAE4 : 0xA3A6AD, NanoVG::ALIGN_CENTER | NanoVG::ALIGN_MIDDLE);
+            label(vg, x + tw / 2, 81, s, 11, cur ? 0xECEAE4 : (p < have ? 0xA3A6AD : 0x5A5D63), NanoVG::ALIGN_CENTER | NanoVG::ALIGN_MIDDLE);
             addHit(kBtnViewPage, p, 0, x, 70, tw, 22);
         }
 
@@ -917,7 +959,7 @@ private:
             for (int i = 0; i < 16; ++i) {
                 const int s = page * 16 + i;
                 const float x = cells + i * (cw + 3);
-                const bool on = (fGrid.trigs[t] >> s) & 1;
+                const bool on = trigOn(t, s);
                 const bool here = ps == s;
                 vg.beginPath();
                 vg.roundedRect(x, y + 1.5f, cw, rowH - 3, 3);
@@ -934,7 +976,7 @@ private:
                 addHit(kBtnCell, t, s, x, y + 1.5f, cw, rowH - 3);
             }
         }
-        label(vg, left, 622, "Click a cell to add or remove a trig. M mutes the track. FOLLOW shows the page that plays.", 11, 0x7C8088,
+        label(vg, left, 622, "Click or drag along a row to add or remove trigs. M mutes the track. FOLLOW shows the page that plays.", 11, 0x7C8088,
               NanoVG::ALIGN_LEFT | NanoVG::ALIGN_MIDDLE);
     }
 
@@ -1013,8 +1055,6 @@ private:
             addHit(kBtnKey, 0, b.code, b.x, y, b.w, h);
         }
         const float py = y + h + 12;
-        label(vg, kRX, py + 13, "STEP PAGES", 11, 0x9A9DA3, NanoVG::ALIGN_LEFT | NanoVG::ALIGN_MIDDLE);
-        drawPageLeds(vg, kRX + 300, py + 8);
         if (fSpec.page >= 0) {
             button(vg, kRX + 310, py, 70, 26, "PAGE", 0, false, 12);
             addHit(kBtnKey, 0, fSpec.page, kRX + 310, py, 70, 26);
@@ -1089,6 +1129,14 @@ private:
     Hit fDown;
     bool fDownActive = false, fFunc = false, fFollow = true, fListOpen = false;
     int fStill = 1000;
+    static constexpr int kHist = 12;
+    float fLedHist[8][kHist] = {};
+    int fHistI = 0, fHistN = 0, fPendPage = -1;
+    bool fPendRec = false;
+    bool fPaint = false, fPaintOn = true;
+    int fPaintTrack = -1;
+    std::vector<bool> fPainted;
+    double fLastNow = 0;
     int fSel = 0, fDragging = -1, fHover = -1, fViewPage = -1, fListBank = 0;
     float fDragY = 0, fDragAcc = 0;
     float fAngle[13];

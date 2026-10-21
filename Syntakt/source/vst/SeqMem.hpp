@@ -14,7 +14,8 @@ struct SeqData {
     uint16_t mutes = 0, reserved2 = 0;                           // bit t = track t+1 muted
     uint64_t trigs[16] = {};                                     // bit s = a trig on step s+1
     uint8_t step[16] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};   // play position (modulo the length), 0xff none
+                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};   // play position, 0xff none
+    uint64_t trigs2[16] = {};                                    // bit s = a trig on step s+65 (128-step patterns)
 };
 
 namespace seqmem {

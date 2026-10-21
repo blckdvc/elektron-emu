@@ -15,7 +15,8 @@ struct SeqData {
     uint16_t mutes = 0, reserved2 = 0;                           // bit t = track t+1 muted
     uint64_t trigs[16] = {};                                     // bit s = a trig on step s+1
     uint8_t step[16] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};   // play position (modulo the length), 0xff none
+                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};   // play position, 0xff none
+    uint64_t trigs2[16] = {};                                    // bit s = a trig on step s+65 (128-step patterns)
 };
 
 namespace seqmem {
@@ -42,7 +43,9 @@ inline size_t read(dt_machine* m, uint8_t* out, size_t cap)
     if (dt_machine_mem_read(m, kPool + d.pattern * kPoolStride, pool, sizeof pool)) return 0;
     for (uint32_t k = 0; k < kSlots; ++k) {
         const uint8_t* e = pool + 6 * k;
-        if (e[0] < 16 && e[1] < 64 && e[5] == 0) d.trigs[e[0]] |= uint64_t(1) << e[1];
+        if (e[0] >= 16 || e[1] >= 128 || e[5] != 0) continue;
+        if (e[1] < 64) d.trigs[e[0]] |= uint64_t(1) << e[1];
+        else d.trigs2[e[0]] |= uint64_t(1) << (e[1] - 64);
     }
     uint8_t st[16];
     if (!dt_machine_mem_read(m, kStep, st, 16))
