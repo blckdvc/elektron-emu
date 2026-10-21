@@ -10,9 +10,11 @@
 #include <cstring>
 
 struct SeqData {
-    uint8_t valid = 0, pattern = 0, tracks = 0, reserved = 0;   // pattern: 0 = A01, 16 = B01...
+    uint8_t valid = 0, pattern = 0, tracks = 0, playing = 0;    // pattern: 0 = A01, 16 = B01...
     uint16_t mutes = 0, reserved2 = 0;                           // bit t = track t+1 muted
     uint64_t trigs[16] = {};                                     // bit s = a trig on step s+1
+    uint8_t step[16] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};   // play position (modulo the length), 0xff none
 };
 
 namespace seqmem {
@@ -26,6 +28,8 @@ static const uint32_t kPattern = 0x405c8d04;     // u8
 static const uint32_t kMutes = 0x407c23c3;       // u16
 static const uint32_t kBase = 0x405cc269, kPatStride = 0x332d, kTrackStride = 0x281;
 static const int kTracks = 12;
+
+static const uint32_t kStep = 0x405c8cea;       // u8 per track, the step that plays
 
 inline size_t read(dt_machine* m, uint8_t* out, size_t cap)
 {
@@ -46,6 +50,9 @@ inline size_t read(dt_machine* m, uint8_t* out, size_t cap)
             if ((b[bit >> 3] >> (7 - (bit & 7))) & 1) d.trigs[t] |= uint64_t(1) << s;
         }
     }
+    uint8_t st[16];
+    if (!dt_machine_mem_read(m, kStep, st, kTracks))
+        for (int t = 0; t < kTracks; ++t) d.step[t] = st[t];
     d.valid = 1;
     std::memcpy(out, &d, sizeof d);
     return sizeof d;

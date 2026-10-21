@@ -157,6 +157,14 @@ SeqSpec seqSpec()
     s.screenMask = 1;
     s.mute = SeqSpec::kModePad;                                    // MUTE, then the pads
     s.muteKey = 49;
+    s.ptnSel = SeqSpec::kBankKey;                                  // the bank key held, trig
+    {
+        static const int kBanks[8] = {1, 2, 3, 4, 9, 10, 11, 12};  // A-D, E-H
+        for (int i = 0; i < 8; ++i) s.bankKeys[i] = kBanks[i];
+    }
+    s.nBanks = 8;
+    s.knobX0 = 0;                                                  // no strip on the left
+    s.knobYMid = 33;
     s.memo = "rytm";
     return s;
 }
@@ -298,7 +306,7 @@ protected:
     // ------------------------------------------------------------ input
     bool onMouse(const MouseEvent& ev) override
     {
-        // the View menu (Classic / Modern / Elektron Emu) in the status bar
+        // the View menu (Classic / Elektron Emu) in the status bar
         if (ev.button == 1 && ev.press && fView.click(ev.pos.getX(), ev.pos.getY(), float(getScaleFactor())) >= 0) {
             applyView();
             repaint();
@@ -484,7 +492,11 @@ protected:
                 g.pattern = sd.pattern;
                 g.tracks = sd.tracks;
                 g.mutes = sd.mutes;
-                for (int i = 0; i < 16; ++i) g.trigs[i] = sd.trigs[i];
+                g.playing = sd.playing != 0;
+                for (int i = 0; i < 16; ++i) {
+                    g.trigs[i] = sd.trigs[i];
+                    g.step[i] = sd.step[i] == 0xff ? -1 : sd.step[i];
+                }
             }
             if (fSeq->setGrid(g)) dirty = true;
         }
@@ -1359,13 +1371,13 @@ private:
 
     RytmPlugin* fPlugin = nullptr;
     std::unique_ptr<SeqView> fSeq;
-    ViewMenu fView;                                        // Classic / Modern / Elektron Emu
+    ViewMenu fView;                                        // Classic / Elektron Emu
     void applyView()
     {
         fSeqMode = fView.mode != ViewMenu::kClassic;
         fSeq->setStudio(fView.mode == ViewMenu::kEmu);
     }
-    bool fSeqMode = true;                                  // Modern or Elektron Emu (not the panel photo)
+    bool fSeqMode = true;                                  // Elektron Emu (not the panel photo)
     NanoImage fPhoto, fScreenImg;
     std::string fPhotoPath;
     std::map<std::string, std::unique_ptr<NanoImage>> fGlow;

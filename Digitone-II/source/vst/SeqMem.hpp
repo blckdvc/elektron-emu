@@ -9,9 +9,11 @@
 #include <cstring>
 
 struct SeqData {
-    uint8_t valid = 0, pattern = 0, tracks = 0, reserved = 0;   // pattern: 0 = A01, 16 = B01...
+    uint8_t valid = 0, pattern = 0, tracks = 0, playing = 0;    // pattern: 0 = A01, 16 = B01...
     uint16_t mutes = 0, reserved2 = 0;                           // bit t = track t+1 muted
     uint64_t trigs[16] = {};                                     // bit s = a trig on step s+1
+    uint8_t step[16] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};   // play position (modulo the length), 0xff none
 };
 
 namespace seqmem {

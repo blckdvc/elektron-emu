@@ -10,9 +10,11 @@
 #include <cstring>
 
 struct SeqData {
-    uint8_t valid = 0, pattern = 0, tracks = 0, reserved = 0;   // pattern: 0 = A01, 16 = B01...
+    uint8_t valid = 0, pattern = 0, tracks = 0, playing = 0;    // pattern: 0 = A01, 16 = B01...
     uint16_t mutes = 0, reserved2 = 0;                           // bit t = track t+1 muted
     uint64_t trigs[16] = {};                                     // bit s = a trig on step s+1
+    uint8_t step[16] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};   // play position (modulo the length), 0xff none
 };
 
 namespace seqmem {
@@ -23,6 +25,8 @@ inline uint32_t be16(const uint8_t* p) { return uint32_t(p[0]) << 8 | p[1]; }
 // four per trig (track 0xff = free); the pools are 0x15C00 apart from A01.
 static const uint32_t kPattern = 0x41765ca3;     // u8: pattern; then u16 mutes
 static const uint32_t kPool = 0x409a229c, kPoolStride = 0x15c00, kSlots = 6560;
+
+static const uint32_t kStep = 0x43165000;       // u8 per track, the step that plays (it counts on past the length on this OS)
 
 inline size_t read(dt_machine* m, uint8_t* out, size_t cap)
 {
@@ -39,6 +43,9 @@ inline size_t read(dt_machine* m, uint8_t* out, size_t cap)
         const uint8_t* e = pool + 6 * k;
         if (e[0] < 16 && e[1] < 64) d.trigs[e[0]] |= uint64_t(1) << e[1];
     }
+    uint8_t st[16];
+    if (!dt_machine_mem_read(m, kStep, st, 16))
+        for (int t = 0; t < 16; ++t) d.step[t] = st[t];
     d.valid = 1;
     std::memcpy(out, &d, sizeof d);
     return sizeof d;

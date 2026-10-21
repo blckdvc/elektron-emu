@@ -195,6 +195,9 @@ SeqSpec seqSpec()
     s.screenMask = 1;
     s.mute = SeqSpec::kModeTrig;                                   // FUNC + BANK: mute mode
     s.muteKey = 33;
+    s.ptnSel = SeqSpec::kPtnArrows;                                // PTN held, LEFT/RIGHT bank, trig
+    s.ptnKey = 34;
+    s.nBanks = 8;
     s.memo = "syntakt";
     return s;
 }
@@ -340,7 +343,7 @@ protected:
     // ------------------------------------------------------------ input
     bool onMouse(const MouseEvent& ev) override
     {
-        // the View menu (Classic / Modern / Elektron Emu) in the status bar
+        // the View menu (Classic / Elektron Emu) in the status bar
         if (ev.button == 1 && ev.press && fView.click(ev.pos.getX(), ev.pos.getY(), float(getScaleFactor())) >= 0) {
             applyView();
             repaint();
@@ -514,7 +517,11 @@ protected:
                 g.pattern = sd.pattern;
                 g.tracks = sd.tracks;
                 g.mutes = sd.mutes;
-                for (int i = 0; i < 16; ++i) g.trigs[i] = sd.trigs[i];
+                g.playing = sd.playing != 0;
+                for (int i = 0; i < 16; ++i) {
+                    g.trigs[i] = sd.trigs[i];
+                    g.step[i] = sd.step[i] == 0xff ? -1 : sd.step[i];
+                }
             }
             if (fSeq->setGrid(g)) dirty = true;
         }
@@ -984,13 +991,13 @@ private:
 
     SyntaktPlugin* fPlugin = nullptr;
     std::unique_ptr<SeqView> fSeq;
-    ViewMenu fView;                                        // Classic / Modern / Elektron Emu
+    ViewMenu fView;                                        // Classic / Elektron Emu
     void applyView()
     {
         fSeqMode = fView.mode != ViewMenu::kClassic;
         fSeq->setStudio(fView.mode == ViewMenu::kEmu);
     }
-    bool fSeqMode = true;                                  // Modern or Elektron Emu (not the panel photo)
+    bool fSeqMode = true;                                  // Elektron Emu (not the panel photo)
     NanoImage fPhoto, fScreenImg;
     std::string fPhotoPath;
     std::map<std::string, std::unique_ptr<NanoImage>> fGlow;
