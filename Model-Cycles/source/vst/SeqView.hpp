@@ -312,6 +312,7 @@ public:
                           g.mutes == fGrid.mutes && !std::memcmp(g.trigs, fGrid.trigs, sizeof g.trigs) &&
                           !std::memcmp(g.trigs2, fGrid.trigs2, sizeof g.trigs2) &&
                           !std::memcmp(g.step, fGrid.step, sizeof g.step);
+        if (level(fSpec.play) > kLit) fPlayLedSeen = true;
         // the positions move while it plays (and go back to 0 at STOP)
         if (std::memcmp(g.step, fGrid.step, sizeof g.step)) fStill = 0;
         else if (fStill < 1000) ++fStill;
@@ -326,7 +327,12 @@ public:
 
     // playing: the positions moved lately; the step that plays on track t (each track
     // runs at its own length and speed, so the positions can differ from track to track)
-    bool playing() const { return fGrid.playing || fStill < 30; }
+    bool playing() const
+    {
+        if (fGrid.playing) return true;
+        if (fPlayLedSeen) return level(fSpec.play) > kLit;          // the PLAY LED, once seen lit
+        return fStill < 30;                                         // otherwise: the positions move
+    }
     int playPos(int t) const
     {
         if (!fGrid.valid || !playing() || t < 0 || t > 15 || fGrid.step[t] < 0 || fGrid.step[t] >= 128) return -1;
@@ -498,7 +504,10 @@ public:
             send(e.kind, e.code, e.arg);
             sent = true;
         }
-        if (fQueue.empty()) { fPendPage = -1; fPendRec = false; }
+        // what the queue changed (REC on, the step page) is kept a little after it played,
+        // the time for the LEDs to show it; the page LEDs are sampled afresh
+        if (sent && fQueue.empty()) { fPendUntil = now + 300; fHistN = 0; }
+        if (fQueue.empty() && now >= fPendUntil) { fPendPage = -1; fPendRec = false; }
         return sent;
     }
 
@@ -550,8 +559,8 @@ private:
         case SeqSpec::kTrkPad:
             queue(at, 0, fSpec.trk); queue(at, 4, fSpec.padBase + t, 1); queue(at, 4, fSpec.padBase + t, 0); queue(at, 1, fSpec.trk);
             break;
-        case SeqSpec::kPad:
-            queue(at, 4, fSpec.padBase + t, 1); queue(at, 4, fSpec.padBase + t, 0);
+        case SeqSpec::kPad:                                         // a soft pad is not taken (Model:Cycles)
+            queue(at, 4, fSpec.padBase + t, 100); queue(at, 4, fSpec.padBase + t, 0);
             break;
         }
     }
@@ -567,7 +576,7 @@ private:
     void queueGridRec(double& at)
     {
         if (fSpec.rec < 0 || fPendRec) return;
-        if (level(fSpec.rec) < 0.2f) queueTap(at, fSpec.rec);
+        if (level(fSpec.rec) < kLit) queueTap(at, fSpec.rec);
         fPendRec = true;                             // on once the queue has played
     }
 
@@ -589,17 +598,31 @@ private:
         if (fHistN < kHist) ++fHistN;
     }
 
-    // the step page the OS shows (the LED lit the most) and how many pages the pattern has
+    // the step page the OS shows: the page LED that stands out from the others (brighter
+    // on the Digitakt, dimmer on the Syntakt), over the last half second
     int osPage() const
     {
         if (fPendPage >= 0) return fPendPage;
+        const int n = std::min(8, fSpec.nPageLeds);
+        float m[8] = {};
+        int lit = 0;
+        for (int i = 0; i < n; ++i) {
+            if (fHistN == 0) m[i] = pageLed(i);
+            else { for (int k = 0; k < fHistN; ++k) m[i] += fLedHist[i][k]; m[i] /= fHistN; }
+            if (m[i] > 0.05f) ++lit;
+        }
+        if (lit < 2) {                                              // one page: the lit one
+            for (int i = 0; i < n; ++i) if (m[i] > 0.05f) return i;
+            return 0;
+        }
         int best = 0;
-        float lv = -1;
-        for (int i = 0; i < std::min(8, fSpec.nPageLeds); ++i) {
-            float m = 0;
-            if (fHistN == 0) m = pageLed(i);
-            else { for (int k = 0; k < fHistN; ++k) m += fLedHist[i][k]; m /= fHistN; }
-            if (m > lv + 0.02f) { lv = m; best = i; }
+        float far = -1;
+        for (int i = 0; i < n; ++i) {
+            if (m[i] <= 0.05f) continue;
+            float others = 0;
+            for (int j = 0; j < n; ++j) if (j != i && m[j] > 0.05f) others += m[j];
+            const float d = std::fabs(m[i] - others / (lit - 1));
+            if (d > far + 0.02f) { far = d; best = i; }
         }
         return best;
     }
@@ -1252,6 +1275,10 @@ private:
     Hit fDown;
     bool fDownActive = false, fFunc = false, fFollow = true, fListOpen = false;
     int fStill = 1000, fLoop = -1;
+    bool fPlayLedSeen = false;
+    double fPendUntil = 0;
+    // a key LED is lit above this (the Digitakt II shows REC on at 0.14 of its range)
+    static constexpr float kLit = 0.05f;
     float fHgt = 640;
     bool fFuncTab = false, fMoved = false;
     float fDownQY = 0;

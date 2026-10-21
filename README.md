@@ -68,6 +68,12 @@ The firmware goes in the same folder as for the VST3. In Logic the Digitakt II
 shows up as "Digitakt II (AU2)". Digitakt II, Syntakt and Rytm can be loaded as a stereo
 instrument or as a multi-output one.
 
+## Tests
+
+`tests/run-tests.sh` checks the Elektron Emu view of each plug-in: the layout, and with
+the firmwares in `.re/`, the grid, mutes, pattern select, play and page loop on the real
+OS (see `tests/README.md`). The layout tests run on GitHub at each push.
+
 ## What isn't real
 
 The Rytm's analog voices and effects, and the Syntakt's analog tracks 9–12,

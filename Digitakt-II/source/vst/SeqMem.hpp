@@ -22,10 +22,12 @@ namespace seqmem {
 
 inline uint32_t be16(const uint8_t* p) { return uint32_t(p[0]) << 8 | p[1]; }
 
-// Digitakt II OS 1.16: each pattern has a pool of 6-byte records [track][step][..][..][..][0],
-// four per trig (track 0xff = free); the pools are 0x15C00 apart from A01.
+// Digitakt II OS 1.16: each step of each track has a 16-bit word, bit 0 = trig on (an
+// erased trig keeps its other bits and its records in the pool after the words, so only
+// this bit says if the trig is there); 128 steps, tracks 0x4A0 apart, patterns 0x15C00
+// apart from A01 (tests/seqtest.cpp checks writing and erasing).
 static const uint32_t kPattern = 0x41765ca3;     // u8: pattern; then u16 mutes
-static const uint32_t kPool = 0x409a229c, kPoolStride = 0x15c00, kSlots = 6560;
+static const uint32_t kTrigs = 0x4099d89c, kPatStride = 0x15c00, kTrackStride = 0x4a0;
 
 static const uint32_t kStep = 0x43165000;       // u8 per track, the step that plays (it counts on past the length on this OS)
 
@@ -38,14 +40,14 @@ inline size_t read(dt_machine* m, uint8_t* out, size_t cap)
     d.pattern = h[0];
     d.mutes = uint16_t(be16(h + 1));
     d.tracks = 16;
-    static thread_local uint8_t pool[kSlots * 6];                 // per engine thread
-    if (dt_machine_mem_read(m, kPool + d.pattern * kPoolStride, pool, sizeof pool)) return 0;
-    for (uint32_t k = 0; k < kSlots; ++k) {
-        const uint8_t* e = pool + 6 * k;
-        if (e[0] >= 16 || e[1] >= 128) continue;
-        if (e[1] < 64) d.trigs[e[0]] |= uint64_t(1) << e[1];
-        else d.trigs2[e[0]] |= uint64_t(1) << (e[1] - 64);
-    }
+    static thread_local uint8_t buf[kTrackStride * 16];            // per engine thread
+    if (dt_machine_mem_read(m, kTrigs + d.pattern * kPatStride, buf, sizeof buf)) return 0;
+    for (int t = 0; t < 16; ++t)
+        for (int s = 0; s < 128; ++s) {
+            if (!(buf[t * kTrackStride + 2 * s + 1] & 1)) continue;
+            if (s < 64) d.trigs[t] |= uint64_t(1) << s;
+            else d.trigs2[t] |= uint64_t(1) << (s - 64);
+        }
     uint8_t st[16];
     if (!dt_machine_mem_read(m, kStep, st, 16))
         for (int t = 0; t < 16; ++t) d.step[t] = st[t];

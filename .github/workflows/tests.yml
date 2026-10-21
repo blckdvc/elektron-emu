@@ -1,0 +1,40 @@
+# The tests of the Elektron Emu view at each push (tests/run-tests.sh). Without the
+# firmwares (they are not in the repo) only the layout tests run here; the tests on the
+# real OS run on a machine that has them: FW_DIR=... tests/run-tests.sh
+name: tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  view:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        machine: [dt, dn, st, ar, mc]
+    steps:
+      - uses: actions/checkout@v4
+      - name: tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build zlib1g-dev
+      - name: machine folder
+        id: dir
+        run: |
+          case ${{ matrix.machine }} in
+            dt) echo "dir=Digitakt-II" >> "$GITHUB_OUTPUT";; dn) echo "dir=Digitone-II" >> "$GITHUB_OUTPUT";;
+            st) echo "dir=Syntakt" >> "$GITHUB_OUTPUT";; ar) echo "dir=Analog-Rytm-MKII" >> "$GITHUB_OUTPUT";;
+            mc) echo "dir=Model-Cycles" >> "$GITHUB_OUTPUT";;
+          esac
+      - name: cache the patched Unicorn
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/elektron-emu-tests/unicorn-${{ matrix.machine }}
+          key: unicorn-${{ matrix.machine }}-${{ hashFiles(format('{0}/source/tools/install-patched-unicorn.sh', steps.dir.outputs.dir), format('{0}/source/tools/patches/**', steps.dir.outputs.dir)) }}
+      - name: tests
+        run: tests/run-tests.sh ${{ matrix.machine }}
+      - name: report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ matrix.machine }}
+          path: tests/out/

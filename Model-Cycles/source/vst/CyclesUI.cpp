@@ -152,47 +152,7 @@ std::vector<std::vector<std::pair<int, float>>> boxWeights(int n, int out)
     return w;
 }
 
-// the keys of the Model:Cycles for the sequencer view (SeqView.hpp): codes of the
-// panel layout JSON, read on the panel photo
-SeqSpec seqSpec()
-{
-    static const char* const kNames[6] = {"Track 1", "Track 2", "Track 3", "Track 4", "Track 5", "Track 6"};
-    static const char* const kKeysN[8] = {"MACHINES", "PUNCH", "GATE", "LFO", "RETRIG", "PATTERN", "TEMPO", "SETTINGS"};
-    static const int kKeyCodes[8] = {5, 6, 7, 8, 4, 3, 14, 13};
-    static const char* const kKnobN[12] = {"PITCH", "DECAY", "COLOR", "SHAPE", "SWEEP", "CONTOUR",
-                                           "DELAY", "REVERB", "LFO SPD", "VOL+DIST", "SWING", "CHANCE"};
-    static const int kKnobCodes[12] = {12, 0, 1, 2, 13, 4, 5, 6, 14, 8, 9, 10};    // "knobs" of mc_panel.json
-    SeqSpec s;
-    s.title = "Model:Cycles";
-    s.tracks = 6;
-    for (int i = 0; i < 6; ++i) s.trackNames[i] = kNames[i];
-    for (int i = 0; i < 16; ++i) s.trig[i] = 16 + i;
-    s.nPageKeys = 8;
-    s.pagesTitle = "KEYS";
-    for (int i = 0; i < 8; ++i) { s.pageKeys[i] = kKeyCodes[i]; s.pageNames[i] = kKeysN[i]; }
-    s.nEnc = 12;
-    for (int i = 0; i < 12; ++i) { s.enc[i] = kKnobCodes[i]; s.encNames[i] = kKnobN[i]; }
-    s.data = mcl::kDataEnc;
-    s.func = 1; s.trk = 2; s.rec = 9; s.play = 10; s.stop = 11; s.page = 15;
-    s.no = 12;                                                     // BACK
-    s.select = SeqSpec::kPad;                                      // a pad selects its track
-    s.padBase = 1;
-    s.nPageLeds = 4;
-    s.screenMask = 0xFF;
-    s.mute = SeqSpec::kHoldPad;                                    // FUNC held + the pad
-    s.ptnSel = SeqSpec::kPtnPad;                                   // PATTERN held, pad = bank, trig
-    s.ptnKey = 3;
-    s.nBanks = 6;
-    s.screenKnobs = false;                                         // the knobs are not on the screen
-    {                                                              // FUNC + key, flat
-        static const char* const kFn[] = {"SOUNDS", "LFO", "PTN TEMPO", "COPY", "CLEAR", "PASTE"};
-        static const int kFk[] = {5, 8, 14, 9, 10, 11};
-        s.nFuncs = int(sizeof kFk / sizeof kFk[0]);
-        for (int i = 0; i < s.nFuncs; ++i) { s.funcNames[i] = kFn[i]; s.funcKeys[i] = kFk[i]; }
-    }
-    s.memo = "cycles";
-    return s;
-}
+#include "SeqSpec.hpp"                                     // seqSpec(), the LED levels
 
 } // namespace
 
@@ -217,14 +177,8 @@ public:
         applyConstraints();
         SeqHost host;
         host.send = [this](int kind, int code, int arg) { send(kind, code, arg); };
-        host.keyLevel = [this](int code) -> float {
-            for (const auto& k : mcl::kKeyLeds) if (k.code == code) return lit(k.led) ? 1.0f : 0.0f;
-            return 0.0f;
-        };
-        host.pageLevel = [this](int i) -> float {
-            if (i < 0 || i >= int(sizeof mcl::kPageLedIds / sizeof mcl::kPageLedIds[0])) return 0.0f;
-            return lit(mcl::kPageLedIds[i]) ? 1.0f : 0.0f;
-        };
+        host.keyLevel = [this](int code) -> float { return seqKeyLevel(fLit, code); };
+        host.pageLevel = [this](int i) -> float { return seqPageLevel(fLit, i); };
         host.screen = [this]() -> const uint8_t* { return fScreen; };
         host.setLoop = [this](int page) { if (fPlugin) fPlugin->setLoopPage(page); };
         host.getLoop = [this]() -> int { return fPlugin ? fPlugin->loopPage() : -1; };
@@ -654,11 +608,7 @@ private:
     // sono 8 byte con 1 = spento (invertiti)
     void applyLeds()
     {
-        const int nbits = int(sizeof mcl::kLedBits / sizeof mcl::kLedBits[0]);
-        for (int id = 0; id < 64; ++id) {
-            const int bit = id < nbits ? mcl::kLedBits[id] : -1;
-            fLit[id] = bit >= 0 && bit / 8 < 8 && ((fLeds[bit / 8] >> (bit % 8)) & 1) == 0;
-        }
+        seqLit(fLeds, fLit);
     }
 
     bool lit(int led) const { return led >= 0 && led < 64 && fLit[led]; }
