@@ -402,7 +402,7 @@ public:
             }
             case kBtnKey: keyDown(h->code); break;
             case kBtnFunc: setFunc(!fFunc); fDownActive = false; break;
-            case kBtnKnob: fDragY = qy; fDragAcc = 0; fDragging = h->index; break;
+            case kBtnKnob: fDragY = qy; fDownQY = qy; fMoved = false; fDragAcc = 0; fDragging = h->index; break;
             case kBtnFollow:
                 fFollow = !fFollow;
                 seqMemoSave("follow", fSpec.memo, fFollow ? 1 : 0);
@@ -422,7 +422,17 @@ public:
         if (!fDownActive) return kNone;
         fDownActive = false;
         if (fDown.kind == kBtnKey) keyUp(fDown.code);
-        if (fDown.kind == kBtnKnob) fDragging = -1;
+        if (fDown.kind == kBtnKnob) {
+            fDragging = -1;
+            if (!fMoved && fDown.code == 1) {                  // a click on the screen, no drag
+                if (fListOn && fSpec.up >= 0 && fSpec.down >= 0) listClick(fDownQY, now);   // a list row
+                else {                                         // a switch: on, then off, then on...
+                    const int i = std::max(0, std::min(7, fDown.index));
+                    turnKnob(fDown.index, fClickDir[i]);
+                    fClickDir[i] = -fClickDir[i];
+                }
+            }
+        }
         return kHandled;
     }
 
@@ -445,12 +455,15 @@ public:
         if (fDragging < 0) {
             const Hit* h = hitAt(qx, qy);
             const int hover = h && h->kind == kBtnKnob && h->code == 1 ? h->index : -1;
-            const int row = h && h->kind == kBtnListRow ? listRow(qy) : -1000;
+            const bool onScreen = qx >= kRX && qx <= kRX + kSW && qy >= kSY && qy <= kSY + kSH;
+            const int row = fListOn && onScreen ? listRow(qy) : -1000;
             if (hover == fHover && row == fListHover) return false;
             fHover = hover;
             fListHover = row;
             return true;
         }
+        if (std::fabs(qy - fDownQY) > 2) fMoved = true;
+        if (!fMoved) return false;
         fDragAcc += (fDragY - qy) / (fine ? 8.0f : 1.5f);   // shift: fine
         fDragY = qy;
         const int steps = int(fDragAcc);
@@ -1070,8 +1083,7 @@ private:
                 vg.strokeWidth(1.5f);
                 vg.stroke();
             }
-            addHit(kBtnListRow, 0, 0, x, y + 8 * sy, w, h - 8 * sy);
-            return;
+            if (!fSpec.screenKnobs) { addHit(kBtnListRow, 0, 0, x, y + 8 * sy, w, h - 8 * sy); return; }
         }
         if (!fSpec.screenKnobs) return;
 
@@ -1084,7 +1096,7 @@ private:
                 const int i = r * 4 + c;
                 if (i >= fSpec.nEnc) continue;
                 const float zx = x0 + c * zw, zy = rows[r], zh = rows[r + 1] - rows[r];
-                if (i == fHover || i == fDragging) {
+                if ((i == fHover && !fListOn) || (i == fDragging && fMoved)) {
                     vg.beginPath();
                     vg.roundedRect(zx + 1, zy + 1, zw - 2, zh - 2, 5);
                     vg.fillColor(rgb(0xF2A93B, i == fDragging ? 0.16f : 0.08f));
@@ -1104,7 +1116,8 @@ private:
     }
 
     // A list on the screen (a menu, the samples...): its selected row is drawn
-    // inverted, a band of 5 to 14 lit rows across most of the width under the title.
+    // inverted, a band of 5 to 14 lit rows across most of the width, under the title
+    // and above the bottom edge.
     void detectList(const uint8_t* s)
     {
         bool wide[64] = {};
@@ -1115,7 +1128,7 @@ private:
                 else if (run > 0 && gap < 3) ++gap;
                 else { run = 0; gap = 0; }
             }
-            wide[y] = best >= 72;
+            wide[y] = best >= 44;
         }
         int bands = 0, b0 = -1, b1 = -1;
         for (int y = 8; y < 64;) {
@@ -1123,7 +1136,8 @@ private:
             int e = y;
             while (e + 1 < 64 && (wide[e + 1] || (e + 2 < 64 && wide[e + 2]))) ++e;
             const int hgt = e - y + 1;
-            if (hgt >= 5 && hgt <= 14) { ++bands; b0 = y; b1 = e; }
+            // not the title bar on top, nor a status bar on the bottom edge (Rytm)
+            if (hgt >= 5 && hgt <= 14 && y >= 11 && e <= 62) { ++bands; b0 = y; b1 = e; }
             y = e + 1;
         }
         const bool on = bands == 1;
@@ -1139,7 +1153,8 @@ private:
         return int(std::floor((py - fListY0) / float(fListPitch)));
     }
 
-    // a row above or below the selected one: UP / DOWN to it; the selected row: YES
+    // a click on a list on the screen: a row above or below the selected one, UP / DOWN
+    // to it; the selected row, YES
     void listClick(float qy, double now)
     {
         const int d = listRow(qy);
@@ -1269,7 +1284,9 @@ private:
     Hit fDown;
     bool fDownActive = false, fFunc = false, fFollow = true, fListOpen = false;
     int fStill = 1000, fLoop = -1;
-    bool fListOn = false, fFuncTab = false;
+    bool fListOn = false, fFuncTab = false, fMoved = false;
+    float fDownQY = 0;
+    int fClickDir[8] = {1, 1, 1, 1, 1, 1, 1, 1};
     int fListY0 = 0, fListY1 = 0, fListPitch = 10, fListHover = -1000;
     static constexpr int kHist = 12;
     float fLedHist[8][kHist] = {};
