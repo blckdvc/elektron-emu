@@ -165,6 +165,8 @@ SeqSpec seqSpec()
     s.nBanks = 8;
     s.knobX0 = 0;                                                  // no strip on the left
     s.knobYMid = 33;
+    s.knobY1 = 55;                                                 // the status bar below: the level
+    s.levelZone[0] = 0; s.levelZone[1] = 55; s.levelZone[2] = 64; s.levelZone[3] = 64;
     {                                                              // FUNC + key, flat
         static const char* const kFn[] = {"PTN: SEQUENTIAL", "PTN: DIR. START", "PTN: DIR. JUMP", "PTN: TEMP JUMP", "CHAIN", "MIDI", "TRIG MUTES", "ACCENT", "SWING", "SLIDE", "COPY", "CLEAR", "PASTE"};
         static const int kFk[] = {1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15};
@@ -557,7 +559,7 @@ private:
     {
         const float w = areaW(), h = getHeight() - fStatusH;
         if (w <= 2 || h <= 2) return;
-        float sc = std::max<float>(arl::kMinScale, std::min(w / arl::kPanelW, h / arl::kPanelH));
+        float sc = std::max<float>(arl::kMinScale, std::min(w / arl::kPanelW, h / panelH()));
         if (std::fabs(sc - 1.0f) < 0.004f) sc = 1.0f;
         fS = sc;
         fOffX = std::round((w - arl::kPanelW * fS) / 2);
@@ -571,7 +573,7 @@ private:
     {
         const double sf = getScaleFactor();
         const uint w = uint(std::lround(arl::kPanelW * z * sf + extraW()));
-        const uint h = uint(std::lround(arl::kPanelH * z * sf + fStatusH));
+        const uint h = uint(std::lround(panelH() * z * sf + fStatusH));
         setSize(w, h);
         if (remember) {
             saveZoom(z);
@@ -1381,10 +1383,15 @@ private:
     RytmPlugin* fPlugin = nullptr;
     std::unique_ptr<SeqView> fSeq;
     ViewMenu fView;                                        // Classic / Elektron Emu
+    // the height of the content for the zoom: the panel photo, or the Elektron Emu
+    // view (as wide as the photo, as tall as it needs)
+    float panelH() const { return fSeqMode && fSeq ? arl::kPanelW * fSeq->aspect() : arl::kPanelH; }
     void applyView()
     {
+        const bool was = fSeqMode;
         fSeqMode = fView.mode != ViewMenu::kClassic;
         fSeq->setStudio(fView.mode == ViewMenu::kEmu);
+        if (was != fSeqMode && fS > 0) zoomTo(currentZoom(), false);   // the window follows the view
     }
     bool fSeqMode = true;                                  // Elektron Emu (not the panel photo)
     NanoImage fPhoto, fScreenImg;

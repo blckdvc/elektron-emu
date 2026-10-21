@@ -539,7 +539,7 @@ private:
         const float w = getWidth(), h = getHeight() - fStatusH;
         if (w <= 2 || h <= 2) return;
         const float sf = float(getScaleFactor());
-        float sc = std::max<float>(mcl::kMinScale * sf, std::min(w / kViewW, h / kViewH));
+        float sc = std::max<float>(mcl::kMinScale * sf, std::min(w / kViewW, h / panelH()));
         for (float z : kZooms)                                      // sui 4 zoom, scala esatta
             if (std::fabs(sc / sf - z) < 0.004f) sc = z * sf;
         fS = sc;
@@ -554,7 +554,7 @@ private:
     {
         const double sf = getScaleFactor();
         const uint w = uint(std::lround(kViewW * z * sf));
-        const uint h = uint(std::lround(kViewH * z * sf + fStatusH));
+        const uint h = uint(std::lround(panelH() * z * sf + fStatusH));
         setSize(w, h);
         if (remember) {
             saveZoom(z);
@@ -1204,10 +1204,15 @@ private:
     CyclesPlugin* fPlugin = nullptr;
     std::unique_ptr<SeqView> fSeq;
     ViewMenu fView;                                        // Classic / Elektron Emu
+    // the height of the content for the zoom: the panel photo, or the Elektron Emu
+    // view (as wide as the photo, as tall as it needs)
+    float panelH() const { return fSeqMode && fSeq ? kViewW * fSeq->aspect() : kViewH; }
     void applyView()
     {
+        const bool was = fSeqMode;
         fSeqMode = fView.mode != ViewMenu::kClassic;
         fSeq->setStudio(fView.mode == ViewMenu::kEmu);
+        if (was != fSeqMode && fS > 0) zoomTo(currentZoom(), false);   // the window follows the view
     }
     bool fSeqMode = true;                                  // Elektron Emu (not the panel photo)
 

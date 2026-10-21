@@ -549,7 +549,7 @@ private:
     {
         const float w = areaW(), h = getHeight() - fStatusH;
         if (w <= 2 || h <= 2) return;
-        float sc = std::max<float>(dtl::kMinScale, std::min(w / dtl::kPanelW, h / dtl::kPanelH));
+        float sc = std::max<float>(dtl::kMinScale, std::min(w / dtl::kPanelW, h / panelH()));
         if (std::fabs(sc - 1.0f) < 0.004f) sc = 1.0f;
         fS = sc;
         fOffX = std::round((w - dtl::kPanelW * fS) / 2);
@@ -563,7 +563,7 @@ private:
     {
         const double sf = getScaleFactor();
         const uint w = uint(std::lround(dtl::kPanelW * z * sf + extraW()));
-        const uint h = uint(std::lround(dtl::kPanelH * z * sf + fStatusH));
+        const uint h = uint(std::lround(panelH() * z * sf + fStatusH));
         setSize(w, h);
         if (remember) {
             saveZoom(z);
@@ -1370,10 +1370,15 @@ private:
     DigitonePlugin* fPlugin = nullptr;
     std::unique_ptr<SeqView> fSeq;
     ViewMenu fView;                                        // Classic / Elektron Emu
+    // the height of the content for the zoom: the panel photo, or the Elektron Emu
+    // view (as wide as the photo, as tall as it needs)
+    float panelH() const { return fSeqMode && fSeq ? dtl::kPanelW * fSeq->aspect() : dtl::kPanelH; }
     void applyView()
     {
+        const bool was = fSeqMode;
         fSeqMode = fView.mode != ViewMenu::kClassic;
         fSeq->setStudio(fView.mode == ViewMenu::kEmu);
+        if (was != fSeqMode && fS > 0) zoomTo(currentZoom(), false);   // the window follows the view
     }
     bool fSeqMode = true;                                  // Elektron Emu (not the panel photo)
     NanoImage fPhoto, fScreenImg;

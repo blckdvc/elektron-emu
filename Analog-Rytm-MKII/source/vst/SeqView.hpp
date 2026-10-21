@@ -61,7 +61,10 @@ struct SeqSpec {
     // the parameters on the screen: 4 columns x 2 rows (A-D, E-H) in the screen
     // pixels x0..127, y0..yMid (top row), yMid..63 (bottom row); false: knobs instead
     bool screenKnobs = true;
-    int knobX0 = 16, knobY0 = 10, knobYMid = 37;
+    int knobX0 = 16, knobY0 = 10, knobYMid = 37, knobY1 = 64;
+    // where the screen shows the track level (turned with the Level/Data encoder),
+    // in screen pixels x0, y0, x1, y1; x1 = 0: none
+    int levelZone[4] = {0, 36, 16, 64};
     // mute of a track: kModeTrig  FUNC + muteKey toggles the mute mode, then the trig key
     //                  kModePad   muteKey toggles the mute mode, then the pad
     //                  kHoldPad   FUNC held + the pad
@@ -290,6 +293,7 @@ public:
     {
         for (float& a : fAngle) a = 0;
         fFollow = seqMemoLoad("follow", fSpec.memo, 1) != 0;
+        fHgt = contentHeight();
         fLoop = fHost.getLoop ? fHost.getLoop() : -1;
         if (fLoop >= 0) fViewPage = fLoop;
     }
@@ -333,12 +337,15 @@ public:
         return s < 64 ? ((fGrid.trigs[t] >> s) & 1) : ((fGrid.trigs2[t] >> (s - 64)) & 1);
     }
 
+    // height / width of the view, to size the window (the width is the panel's)
+    float aspect() const { return fHgt / kW; }
+
     // ------------------------------------------------------------ drawing
     void draw(NanoVG& vg, float x, float y, float w, float h)
     {
-        fScale = std::max(0.2f, std::min(w / kW, h / kH));
+        fScale = std::max(0.2f, std::min(w / kW, h / fHgt));
         fOx = std::round(x + (w - kW * fScale) / 2);
-        fOy = std::round(y + (h - kH * fScale) / 2);
+        fOy = std::round(y + (h - fHgt * fScale) / 2);
 
         vg.beginPath();
         vg.rect(x, y, w, h);
@@ -392,7 +399,6 @@ public:
                 goToPage(h->index, now);
                 break;
             case kBtnLoop: setLoop(fLoop >= 0 ? -1 : std::max(0, fViewPage)); break;
-            case kBtnListRow: listClick(qy, now); break;
             case kBtnTab: fFuncTab = h->index == 1; break;
             case kBtnFuncKey: {
                 double at = queueStart(now);
@@ -424,13 +430,10 @@ public:
         if (fDown.kind == kBtnKey) keyUp(fDown.code);
         if (fDown.kind == kBtnKnob) {
             fDragging = -1;
-            if (!fMoved && fDown.code == 1) {                  // a click on the screen, no drag
-                if (fListOn && fSpec.up >= 0 && fSpec.down >= 0) listClick(fDownQY, now);   // a list row
-                else {                                         // a switch: on, then off, then on...
-                    const int i = std::max(0, std::min(7, fDown.index));
-                    turnKnob(fDown.index, fClickDir[i]);
-                    fClickDir[i] = -fClickDir[i];
-                }
+            if (!fMoved && fDown.code == 1 && fDown.index < fSpec.nEnc) {   // a click on the screen, no drag
+                const int i = std::max(0, std::min(7, fDown.index));    // a switch: on, then off...
+                turnKnob(fDown.index, fClickDir[i]);
+                fClickDir[i] = -fClickDir[i];
             }
         }
         return kHandled;
@@ -455,11 +458,8 @@ public:
         if (fDragging < 0) {
             const Hit* h = hitAt(qx, qy);
             const int hover = h && h->kind == kBtnKnob && h->code == 1 ? h->index : -1;
-            const bool onScreen = qx >= kRX && qx <= kRX + kSW && qy >= kSY && qy <= kSY + kSH;
-            const int row = fListOn && onScreen ? listRow(qy) : -1000;
-            if (hover == fHover && row == fListHover) return false;
+            if (hover == fHover) return false;
             fHover = hover;
-            fListHover = row;
             return true;
         }
         if (std::fabs(qy - fDownQY) > 2) fMoved = true;
@@ -477,11 +477,6 @@ public:
     bool scroll(float x, float y, float delta, bool fine)
     {
         const Hit* h = hitAt((x - fOx) / fScale, (y - fOy) / fScale);
-        if (h && h->kind == kBtnListRow && delta != 0) {          // a list on the screen: up / down
-            double at = queueStart(fLastNow);
-            queueTap(at, delta > 0 ? fSpec.up : fSpec.down);
-            return true;
-        }
         if (!h || h->kind != kBtnKnob || delta == 0) return false;
         int steps = int(std::max(-16.0f, std::min(16.0f, delta * 4)));
         if (steps == 0) steps = delta > 0 ? 1 : -1;
@@ -508,14 +503,14 @@ public:
     bool busy() const { return !fQueue.empty(); }
 
 private:
-    static constexpr float kW = 1000, kH = 640;
+    static constexpr float kW = 1000;
     static constexpr double kGapMs = 70;
     // the right column: the screen (3x) and what is under it
     static constexpr float kRX = 604, kSY = 70, kSW = 384, kSH = 192;
 
     enum Kind {
         kBtnTrack, kBtnStep, kBtnCell, kBtnMute, kBtnViewPage, kBtnKey, kBtnFunc, kBtnKnob,
-        kBtnFollow, kBtnListToggle, kBtnBank, kBtnPattern, kBtnPrevNext, kBtnLoop, kBtnListRow, kBtnTab, kBtnFuncKey
+        kBtnFollow, kBtnListToggle, kBtnBank, kBtnPattern, kBtnPrevNext, kBtnLoop, kBtnTab, kBtnFuncKey
     };
     struct Hit { int kind = 0, index = 0, code = 0; float x = 0, y = 0, w = 0, h = 0; };
     struct Ev { double at; int kind, code, arg; };
@@ -626,6 +621,26 @@ private:
         const int k = ((p - cur) % n + n) % n;
         for (int i = 0; i < k; ++i) queueTap(at, fSpec.page);
         fPendPage = p;
+    }
+
+    float gridRowH() const { return std::max(1, std::min(16, fSpec.tracks)) <= 8 ? 50.0f : 31.0f; }
+
+    // what the view needs in height: the grid on the left, the screen, keys and
+    // pages (and knobs) on the right
+    float contentHeight() const
+    {
+        const int n = std::max(1, std::min(16, fSpec.tracks));
+        const float leftH = 102 + n * gridRowH() + 40;
+        const float base = kSY + kSH + 14 + 36 + 22;                 // under the keys
+        const int nPages = std::max(fSpec.nPageKeys, 0), perRow = nPages > 6 ? 4 : 3;
+        float pages = base + 12 + ((nPages + perRow - 1) / perRow) * 36 + 8;
+        const int nk = (fSpec.screenKnobs ? 0 : std::min(12, fSpec.nEnc)) + (fSpec.data >= 0 ? 1 : 0);
+        if (nk > 0) {
+            const int kRow = nk > 8 ? (nk + 1) / 2 : nk;
+            pages += ((nk + kRow - 1) / kRow) * 66 + 10;
+        }
+        const float funcs = fSpec.nFuncs > 0 ? base + 16 + ((fSpec.nFuncs + 3) / 4) * 36 + 10 : 0;
+        return std::max(440.0f, std::ceil(std::max(leftH, std::max(pages, funcs))));
     }
 
     void setLoop(int p)
@@ -945,8 +960,8 @@ private:
     void drawGrid(NanoVG& vg)
     {
         const int n = std::max(1, std::min(16, fSpec.tracks));
-        const float left = 18, cells = 184, right = 584, top = 102, bottom = 604;
-        const float rowH = std::min(n <= 8 ? 54.0f : 31.0f, (bottom - top) / n);
+        const float left = 18, cells = 184, right = 584, top = 102;
+        const float rowH = gridRowH();
         const int nTabs = std::max(1, std::min(8, std::max(4, fSpec.nPageLeds)));
         if (fViewPage < 0) fViewPage = osPage();
         const int page = std::max(0, std::min(nTabs - 1, fViewPage));
@@ -1039,7 +1054,7 @@ private:
                 vg.fill();
             }
         }
-        label(vg, left, 622, "Click or drag along a row to add or remove trigs. M mutes. LOOP PAGE plays the selected page only.", 11, 0x7C8088,
+        label(vg, left, top + n * rowH + 28, "Click or drag along a row to add or remove trigs. M mutes. LOOP PAGE plays the selected page only.", 11, 0x7C8088,
               NanoVG::ALIGN_LEFT | NanoVG::ALIGN_MIDDLE);
     }
 
@@ -1066,37 +1081,24 @@ private:
                     p[0] = on ? 0xE8 : 0x0C; p[1] = on ? 0xF6 : 0x0E; p[2] = on ? 0xFF : 0x12; p[3] = 0xFF;
                 }
                 fScreenImg.update(fScreenPx.data());
-                detectList(s);
             }
             vg.beginPath();
             vg.rect(x, y, w, h);
             vg.fillPaint(vg.imagePattern(x, y, w, h, 0, fScreenImg, 1.0f));
             vg.fill();
         }
-        if (fListOn && fSpec.up >= 0 && fSpec.down >= 0) {      // a list: its rows are clicked
-            const float sy = h / 64;
-            if (fListHover > -1000) {
-                const float ry = y + (fListY0 + fListHover * fListPitch) * sy;
-                vg.beginPath();
-                vg.roundedRect(x + 1, ry - 1, w - 2, (fListY1 - fListY0 + 1) * sy + 2, 4);
-                vg.strokeColor(rgb(0xF2A93B, 0.9f));
-                vg.strokeWidth(1.5f);
-                vg.stroke();
-            }
-            if (!fSpec.screenKnobs) { addHit(kBtnListRow, 0, 0, x, y + 8 * sy, w, h - 8 * sy); return; }
-        }
         if (!fSpec.screenKnobs) return;
 
         // the 8 parameter zones
         const float sx = w / 128, sy = h / 64;
         const float x0 = x + fSpec.knobX0 * sx, zw = (x + w - x0) / 4;
-        const float rows[3] = {y + fSpec.knobY0 * sy, y + fSpec.knobYMid * sy, y + h};
+        const float rows[3] = {y + fSpec.knobY0 * sy, y + fSpec.knobYMid * sy, y + fSpec.knobY1 * sy};
         for (int r = 0; r < 2; ++r)
             for (int c = 0; c < 4; ++c) {
                 const int i = r * 4 + c;
                 if (i >= fSpec.nEnc) continue;
                 const float zx = x0 + c * zw, zy = rows[r], zh = rows[r + 1] - rows[r];
-                if ((i == fHover && !fListOn) || (i == fDragging && fMoved)) {
+                if (i == fHover || (i == fDragging && fMoved)) {
                     vg.beginPath();
                     vg.roundedRect(zx + 1, zy + 1, zw - 2, zh - 2, 5);
                     vg.fillColor(rgb(0xF2A93B, i == fDragging ? 0.16f : 0.08f));
@@ -1113,54 +1115,23 @@ private:
                 }
                 addHit(kBtnKnob, i, 1, zx, zy, zw, zh);
             }
-    }
 
-    // A list on the screen (a menu, the samples...): its selected row is drawn
-    // inverted, a band of 5 to 14 lit rows across most of the width, under the title
-    // and above the bottom edge.
-    void detectList(const uint8_t* s)
-    {
-        bool wide[64] = {};
-        for (int y = 8; y < 64; ++y) {
-            int run = 0, best = 0, gap = 0;
-            for (int x = 0; x < 128; ++x) {
-                if (s[y * 128 + x] & fSpec.screenMask) { run += 1 + gap; gap = 0; best = std::max(best, run); }
-                else if (run > 0 && gap < 3) ++gap;
-                else { run = 0; gap = 0; }
+        // the level: the Level/Data encoder (drag or wheel)
+        const int* lz = fSpec.levelZone;
+        if (fSpec.data >= 0 && lz[2] > lz[0]) {
+            const int i = std::min(12, fSpec.nEnc);
+            const float zx = x + lz[0] * sx, zy = y + lz[1] * sy, zw = (lz[2] - lz[0]) * sx, zh = (lz[3] - lz[1]) * sy;
+            if (i == fHover || (i == fDragging && fMoved)) {
+                vg.beginPath();
+                vg.roundedRect(zx + 1, zy + 1, zw - 2, zh - 2, 5);
+                vg.fillColor(rgb(0x6FB7FF, i == fDragging ? 0.18f : 0.10f));
+                vg.fill();
+                vg.strokeColor(rgb(0x6FB7FF, 0.9f));
+                vg.strokeWidth(1.5f);
+                vg.stroke();
             }
-            wide[y] = best >= 44;
+            addHit(kBtnKnob, i, 1, zx, zy, zw, zh);
         }
-        int bands = 0, b0 = -1, b1 = -1;
-        for (int y = 8; y < 64;) {
-            if (!wide[y]) { ++y; continue; }
-            int e = y;
-            while (e + 1 < 64 && (wide[e + 1] || (e + 2 < 64 && wide[e + 2]))) ++e;
-            const int hgt = e - y + 1;
-            // not the title bar on top, nor a status bar on the bottom edge (Rytm)
-            if (hgt >= 5 && hgt <= 14 && y >= 11 && e <= 62) { ++bands; b0 = y; b1 = e; }
-            y = e + 1;
-        }
-        const bool on = bands == 1;
-        if (on != fListOn || b0 != fListY0) fListHover = -1000;
-        fListOn = on;
-        if (on) { fListY0 = b0; fListY1 = b1; fListPitch = b1 - b0 + 2; }
-    }
-
-    // the row under the screen point qy (view units), relative to the selected one
-    int listRow(float qy) const
-    {
-        const float py = (qy - kSY) / (kSH / 64);
-        return int(std::floor((py - fListY0) / float(fListPitch)));
-    }
-
-    // a click on a list on the screen: a row above or below the selected one, UP / DOWN
-    // to it; the selected row, YES
-    void listClick(float qy, double now)
-    {
-        const int d = listRow(qy);
-        double at = queueStart(now);
-        if (d == 0) { queueTap(at, fSpec.yes); return; }
-        for (int i = 0; i < std::min(16, std::abs(d)); ++i) queueTap(at, d > 0 ? fSpec.down : fSpec.up);
     }
 
     void drawNav(NanoVG& vg)
@@ -1178,18 +1149,13 @@ private:
             button(vg, b.x, y, b.w, h, b.t, 0);
             addHit(kBtnKey, 0, b.code, b.x, y, b.w, h);
         }
-        const float py = y + h + 12;
-        if (fSpec.page >= 0) {
-            button(vg, kRX + 310, py, 70, 26, "PAGE", 0, false, 12);
-            addHit(kBtnKey, 0, fSpec.page, kRX + 310, py, 70, 26);
-        }
     }
 
     // the parameter pages (menus) and the knobs that are not on the screen
     void drawParams(NanoVG& vg)
     {
         const float left = kRX, width = kSW;
-        float top = kSY + kSH + 14 + 36 + 12 + 26 + 22;
+        float top = kSY + kSH + 14 + 36 + 22;
         // two tabs: the parameter pages (and knobs), or the FUNC functions as buttons
         if (fSpec.nFuncs > 0 && fSpec.func >= 0) {
             const char* names[2] = {fSpec.pagesTitle, "FUNC MENUS"};
@@ -1210,7 +1176,7 @@ private:
                 const int n = fSpec.nFuncs, perRow = 4;
                 const float gap = 6, bw = (width - gap * (perRow - 1)) / perRow;
                 const int rows = (n + perRow - 1) / perRow;
-                const float bh = std::min(30.0f, (kH - 12 - top) / rows - gap);
+                const float bh = std::min(30.0f, (fHgt - 12 - top) / rows - gap);
                 for (int i = 0; i < n; ++i) {
                     const float x = left + (i % perRow) * (bw + gap), y = top + (i / perRow) * (bh + gap);
                     button(vg, x, y, bw, bh, fSpec.funcNames[i] ? fSpec.funcNames[i] : "", 0, false, 11);
@@ -1244,7 +1210,7 @@ private:
         const int perRow = nk > 8 ? (nk + 1) / 2 : nk;
         const int rows = (nk + perRow - 1) / perRow;
         const float slot = width / perRow;
-        const float rowH = std::min(80.0f, (kH - 24 - top) / rows);
+        const float rowH = std::min(80.0f, (fHgt - 24 - top) / rows);
         const float r = std::max(10.0f, std::min(20.0f, std::min(slot, rowH) * 0.27f));
         for (int k = 0; k < nk; ++k) {
             const int i = knobs[k];
@@ -1284,10 +1250,10 @@ private:
     Hit fDown;
     bool fDownActive = false, fFunc = false, fFollow = true, fListOpen = false;
     int fStill = 1000, fLoop = -1;
-    bool fListOn = false, fFuncTab = false, fMoved = false;
+    float fHgt = 640;
+    bool fFuncTab = false, fMoved = false;
     float fDownQY = 0;
     int fClickDir[8] = {1, 1, 1, 1, 1, 1, 1, 1};
-    int fListY0 = 0, fListY1 = 0, fListPitch = 10, fListHover = -1000;
     static constexpr int kHist = 12;
     float fLedHist[8][kHist] = {};
     int fHistI = 0, fHistN = 0, fPendPage = -1;
