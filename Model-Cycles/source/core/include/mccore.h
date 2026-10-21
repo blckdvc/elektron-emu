@@ -215,6 +215,15 @@ DT_API int dt_rt_panel(dt_rt *rt, int kind, int code, int arg);
 DT_API void dt_rt_set_volume(dt_rt *rt, double volume);
 /* schermo (128 x 64), LED accumulati dall'ultima chiamata (8 byte) -> versione */
 DT_API uint64_t dt_rt_screen(dt_rt *rt, uint8_t out[128 * 64], uint8_t leds[8]);
+
+/* lettura dei pattern per la vista Elektron Emu (SeqMem.hpp del plugin): ogni 8 giri il
+   thread del motore chiama `fn` sulla macchina (fra due giri: la memoria e' ferma) e
+   pubblica i byte che scrive (al piu' DT_SEQ_MAX); la GUI li legge con dt_rt_seq. */
+#define DT_SEQ_MAX 256
+typedef size_t (*dt_seq_reader)(dt_machine *m, uint8_t *out, size_t cap);
+DT_API void dt_rt_set_seq_reader(dt_rt *rt, dt_seq_reader fn);
+/* i byte dell'ultima lettura (-> quanti, 0 se nessuna); `version` (o NULL) cambia con loro */
+DT_API size_t dt_rt_seq(dt_rt *rt, uint8_t *out, size_t cap, uint64_t *version);
 DT_API size_t dt_rt_midi_out(dt_rt *rt, uint8_t *buf, size_t max, uint32_t *offset, uint32_t frames);
 DT_API int64_t dt_rt_underruns(dt_rt *rt);
 DT_API const char *dt_rt_status(dt_rt *rt);

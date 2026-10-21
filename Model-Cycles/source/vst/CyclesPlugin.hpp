@@ -6,6 +6,7 @@
 
 #include "DistrhoPlugin.hpp"
 #include "mccore.h"
+#include "SeqMem.hpp"
 #include "FirmwareStore.hpp"
 
 #include <atomic>
@@ -36,6 +37,8 @@ public:
 
     // dal thread della vista
     uint64_t copyScreen(uint8_t screen[128 * 64], uint8_t leds[8]);
+    // the pattern read in the OS memory (SeqMem.hpp), false while there is none
+    bool seqData(SeqData& d);
     void panel(int kind, int code, int arg);
     double outputVolume() const { return fVolume.load(); }
     void setVolumeFromUI(double v);

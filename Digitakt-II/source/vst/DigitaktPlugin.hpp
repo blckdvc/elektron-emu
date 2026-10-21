@@ -5,6 +5,7 @@
 
 #include "DistrhoPlugin.hpp"
 #include "dtcore.h"
+#include "SeqMem.hpp"
 #include "DriveModel.hpp"
 
 #include <atomic>
@@ -35,6 +36,8 @@ public:
 
     // dal thread della vista
     uint64_t copyScreen(uint8_t screen[128 * 64], uint8_t leds[50]);
+    // the pattern read in the OS memory (SeqMem.hpp), false while there is none
+    bool seqData(SeqData& d);
     void panel(int kind, int code, int arg);
     double masterVolume() const { return fMaster.load(); }
     void setMasterFromUI(double v);

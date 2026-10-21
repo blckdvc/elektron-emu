@@ -172,6 +172,13 @@ struct dt_rt {
     uint8_t *mo;
     _Atomic uint64_t mo_head, mo_tail;
     /* schermo e LED: motore -> GUI (seqlock) */
+    /* pattern (vista Elektron Emu): motore -> GUI (seqlock), ogni 8 giri */
+    _Atomic(dt_seq_reader) seq_fn;
+    _Atomic uint64_t sq;
+    uint8_t sqbuf[DT_SEQ_MAX];
+    size_t sqlen;
+    uint64_t sqver;
+    unsigned sqtick;
     _Atomic uint64_t seq;
     uint8_t screen[128 * 64], leds[8];
     uint64_t screen_ver, leds_ver;
@@ -232,6 +239,52 @@ static int ev_peek(dt_rt *rt)
 /* schermo e LED per la GUI (seqlock). I LED si accumulano (AND dei byte,
    invertiti) finche' la GUI non li legge, come Engine.take_leds: un lampo piu'
    breve del ridisegno (TEMPO, ~40 ms) resta visibile. */
+/* la lettura dei pattern (dt_rt_set_seq_reader): fra due giri, sul thread del motore */
+static void rt_seq_publish(dt_rt *rt)
+{
+    uint8_t tmp[DT_SEQ_MAX];
+    size_t n;
+    dt_seq_reader fn = atomic_load_explicit(&rt->seq_fn, memory_order_acquire);
+    if (!fn || (rt->sqtick++ & 7u))
+        return;
+    n = fn(dt_engine_machine(rt->e), tmp, sizeof tmp);
+    if (n > sizeof tmp)
+        n = 0;
+    if (n == rt->sqlen && !memcmp(tmp, rt->sqbuf, n))
+        return;
+    atomic_fetch_add_explicit(&rt->sq, 1, memory_order_acq_rel);
+    memcpy(rt->sqbuf, tmp, n);
+    rt->sqlen = n;
+    rt->sqver++;
+    atomic_fetch_add_explicit(&rt->sq, 1, memory_order_acq_rel);
+}
+
+void dt_rt_set_seq_reader(dt_rt *rt, dt_seq_reader fn)
+{
+    if (rt)
+        atomic_store_explicit(&rt->seq_fn, fn, memory_order_release);
+}
+
+size_t dt_rt_seq(dt_rt *rt, uint8_t *out, size_t cap, uint64_t *version)
+{
+    if (!rt)
+        return 0;
+    for (;;) {
+        uint64_t s0 = atomic_load_explicit(&rt->sq, memory_order_acquire);
+        size_t n;
+        if (s0 & 1)
+            continue;
+        n = rt->sqlen < cap ? rt->sqlen : cap;
+        if (out && n)
+            memcpy(out, rt->sqbuf, n);
+        if (version)
+            *version = rt->sqver;
+        atomic_thread_fence(memory_order_acquire);
+        if (atomic_load_explicit(&rt->sq, memory_order_relaxed) == s0)
+            return n;
+    }
+}
+
 static void rt_publish(dt_rt *rt)
 {
     uint8_t scr[128 * 64], leds[8];
@@ -329,6 +382,7 @@ static int rt_step(dt_rt *rt)
     atomic_store_explicit(&rt->engine_t48, rt_engine_t48(rt), memory_order_release);
     atomic_fetch_add(&rt->chunks, 1);
     rt_publish(rt);
+    rt_seq_publish(rt);
     rt_midi_out(rt);
     return 1;
 }

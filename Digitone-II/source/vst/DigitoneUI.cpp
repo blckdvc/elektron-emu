@@ -163,6 +163,9 @@ SeqSpec seqSpec()
     s.select = SeqSpec::kTrkTrig;
     s.nPageLeds = 8;
     s.screenMask = 1;
+    s.mute = SeqSpec::kModeTrig;                                   // FUNC + TRK: mute mode
+    s.muteKey = 16;
+    s.memo = "digitone2";
     return s;
 }
 
@@ -203,6 +206,8 @@ public:
         };
         host.screen = [this]() -> const uint8_t* { return fScreen; };
         fSeq.reset(new SeqView(seqSpec(), host));
+        fView.load(seqSpec().memo);
+        applyView();
         zoomTo(loadZoom(), false);
         addIdleCallback(this, 40);
     }
@@ -302,7 +307,6 @@ protected:
             text(px(dtl::kVolX), py(dtl::kVolY + dtl::kVolR + dtl::kVolTextDY), t.c_str(), nullptr);
         }
 
-        SeqView::drawToggle(*this, 8 * float(getScaleFactor()), 8 * float(getScaleFactor()), float(getScaleFactor()));
         drawOverlay();
         drawStatusBar(areaW(), H);
         drawDrive(W, H);
@@ -311,6 +315,12 @@ protected:
     // ------------------------------------------------------------ input
     bool onMouse(const MouseEvent& ev) override
     {
+        // the View menu (Classic / Modern / Elektron Emu) in the status bar
+        if (ev.button == 1 && ev.press && fView.click(ev.pos.getX(), ev.pos.getY(), float(getScaleFactor())) >= 0) {
+            applyView();
+            repaint();
+            return true;
+        }
         if (ev.button != 1) return false;
         const float x = ev.pos.getX(), y = ev.pos.getY();
         if (x >= areaW()) {                                // linguetta e +DRIVE
@@ -322,13 +332,11 @@ protected:
             const int z = zoomHit(x, y);
             if (z >= 0) { zoomTo(kZooms[z], true); return true; }
             if (gripHit(x, y)) { fGrip = true; fGripX = x; fGripW = areaW(); return true; }
-            const float seqSf = float(getScaleFactor());
             if (fSeqMode) {
-                if (fSeq->mouse(true, x, y, nowMs()) == SeqView::kToPanel) fSeqMode = false;
+                fSeq->mouse(true, x, y, nowMs());
                 repaint();
                 return true;
             }
-            if (SeqView::toggleHit(x, y, 8 * seqSf, 8 * seqSf, seqSf)) { fSeqMode = true; repaint(); return true; }
             const float qx = (x - fOffX) / fS, qy = (y - fOffY) / fS;
             Hit h = hit(qx, qy);
             fDown = h;
@@ -457,6 +465,18 @@ protected:
         const uint64_t v = fPlugin->copyScreen(fScreen, fLeds);
         if (v != fVersion) { fVersion = v; fScreenDirty = true; fSeq->screenChanged(); dirty = true; }
         if (fSeq->tick(t)) dirty = true;
+        if (fView.mode == ViewMenu::kEmu) {                // the pattern read in the OS memory
+            SeqData sd;
+            SeqGrid g;
+            if (fPlugin->seqData(sd)) {
+                g.valid = true;
+                g.pattern = sd.pattern;
+                g.tracks = sd.tracks;
+                g.mutes = sd.mutes;
+                for (int i = 0; i < 16; ++i) g.trigs[i] = sd.trigs[i];
+            }
+            if (fSeq->setGrid(g)) dirty = true;
+        }
         if (fReleaseLatchedAt > 0 && t >= fReleaseLatchedAt) {
             fReleaseLatchedAt = 0;
             for (int c : fLatched) send(1, c);
@@ -1298,9 +1318,12 @@ private:
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
         fillColor(fNoteUntil > nowMs() && fNoteError ? hexc(cErr) : Color(sc.r, sc.g, sc.b));
         const float ty = H - fStatusH / 2 + 2 * sf;
-        scissor(0, H - fStatusH, std::max(0.0f, W - 220 * sf), fStatusH);
+        scissor(0, H - fStatusH, std::max(0.0f, W - 356 * sf), fStatusH);
         if (!fStatus.empty()) text(10 * sf, ty, fStatus.c_str(), nullptr);
         resetScissor();
+        fView.place(W - 346 * sf, H - fStatusH + 3 * sf, 128 * sf, fStatusH - 5 * sf);
+        fView.drawButton(*this, sf);
+        fView.drawMenu(*this, sf);
         const float cur = currentZoom();
         textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
         for (int i = 0; i < kNZooms; ++i) {
@@ -1330,7 +1353,13 @@ private:
 
     DigitonePlugin* fPlugin = nullptr;
     std::unique_ptr<SeqView> fSeq;
-    bool fSeqMode = true;                                  // la vista sequencer all'apertura
+    ViewMenu fView;                                        // Classic / Modern / Elektron Emu
+    void applyView()
+    {
+        fSeqMode = fView.mode != ViewMenu::kClassic;
+        fSeq->setStudio(fView.mode == ViewMenu::kEmu);
+    }
+    bool fSeqMode = true;                                  // Modern or Elektron Emu (not the panel photo)
     NanoImage fPhoto, fScreenImg;
     std::string fPhotoPath;
     std::map<std::string, std::unique_ptr<NanoImage>> fGlow;

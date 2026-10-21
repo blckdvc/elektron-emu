@@ -397,6 +397,7 @@ void DigitonePlugin::setState(const char* key, const char* value)
 // ------------------------------------------------------------------ avvio del motore
 void DigitonePlugin::swapEngine(dt_rt* rt)
 {
+    if (rt) dt_rt_set_seq_reader(rt, seqmem::read);   // the pattern for the Elektron Emu view
     dt_rt* old = fRt.exchange(rt);
     // run() ha caricato il vecchio puntatore prima dello scambio: si aspetta che finisca
     while (fInRun.load())
@@ -700,6 +701,17 @@ void DigitonePlugin::run(const float**, float** outputs, uint32_t frames, const 
 }
 
 // ------------------------------------------------------------------ per la vista
+bool DigitonePlugin::seqData(SeqData& d)
+{
+    dt_rt* rt = fRt.load();
+    if (!rt) return false;
+    uint8_t buf[DT_SEQ_MAX];
+    uint64_t v = 0;
+    if (dt_rt_seq(rt, buf, sizeof buf, &v) != sizeof d) return false;
+    std::memcpy(&d, buf, sizeof d);
+    return d.valid != 0;
+}
+
 uint64_t DigitonePlugin::copyScreen(uint8_t screen[128 * 64], uint8_t leds[DN_LEDS])
 {
     dt_rt* rt = fRt.load();

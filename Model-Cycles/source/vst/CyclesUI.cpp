@@ -175,10 +175,12 @@ SeqSpec seqSpec()
     s.data = mcl::kDataEnc;
     s.func = 1; s.trk = 2; s.rec = 9; s.play = 10; s.stop = 11; s.page = 15;
     s.no = 12;                                                     // BACK
-    s.select = SeqSpec::kTrkPad;                                   // TRACK + pad 1..6
+    s.select = SeqSpec::kPad;                                      // a pad selects its track
     s.padBase = 1;
     s.nPageLeds = 4;
     s.screenMask = 0xFF;
+    s.mute = SeqSpec::kHoldPad;                                    // FUNC held + the pad
+    s.memo = "cycles";
     return s;
 }
 
@@ -215,6 +217,8 @@ public:
         };
         host.screen = [this]() -> const uint8_t* { return fScreen; };
         fSeq.reset(new SeqView(seqSpec(), host));
+        fView.load(seqSpec().memo);
+        applyView();
         zoomTo(loadZoom(), false);
         addIdleCallback(this, 33);
     }
@@ -275,7 +279,6 @@ protected:
         drawLeds();
         drawOutlines();
         drawVolume();
-        SeqView::drawToggle(*this, 8 * float(getScaleFactor()), 8 * float(getScaleFactor()), float(getScaleFactor()));
         drawCard();
         drawBar(W, H);
     }
@@ -283,6 +286,12 @@ protected:
     // ------------------------------------------------------------ input
     bool onMouse(const MouseEvent& ev) override
     {
+        // the View menu (Classic / Modern / Elektron Emu) in the status bar
+        if (ev.button == 1 && ev.press && fView.click(ev.pos.getX(), ev.pos.getY(), float(getScaleFactor())) >= 0) {
+            applyView();
+            repaint();
+            return true;
+        }
         const float x = ev.pos.getX(), y = ev.pos.getY();
         const float qx = (x - fOffX) / fS, qy = (y - fOffY) / fS;
         if (!ev.press) {
@@ -301,13 +310,11 @@ protected:
             if (ev.button == 1) cardClick(x, y);
             return true;
         }
-            const float seqSf = float(getScaleFactor());
             if (fSeqMode) {
-                if (fSeq->mouse(true, x, y, nowMs()) == SeqView::kToPanel) fSeqMode = false;
+                fSeq->mouse(true, x, y, nowMs());
                 repaint();
                 return true;
             }
-            if (SeqView::toggleHit(x, y, 8 * seqSf, 8 * seqSf, seqSf)) { fSeqMode = true; repaint(); return true; }
         if (!running() || y >= getHeight() - fStatusH) return false;
         if (ev.button == 2 || ev.button == 3 || (ev.button == 1 && (ev.mod & kModifierControl))) {
             latch(qx, qy);
@@ -436,6 +443,18 @@ protected:
             dirty = true;
         }
         if (fSeq->tick(t)) dirty = true;
+        if (fView.mode == ViewMenu::kEmu) {                // the pattern read in the OS memory
+            SeqData sd;
+            SeqGrid g;
+            if (fPlugin->seqData(sd)) {
+                g.valid = true;
+                g.pattern = sd.pattern;
+                g.tracks = sd.tracks;
+                g.mutes = sd.mutes;
+                for (int i = 0; i < 16; ++i) g.trigs[i] = sd.trigs[i];
+            }
+            if (fSeq->setGrid(g)) dirty = true;
+        }
 
         // gli eventi a tempo: rilascio delle combinazioni, del push di DATA
         if (fChordDue > 0 && t >= fChordDue) { endChord(); dirty = true; }
@@ -777,9 +796,12 @@ private:
         textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
         fillColor(hexc(kStatusRGB));
         const float ty = H - fStatusH / 2 + 2 * sf;
-        scissor(0, H - fStatusH, std::max(0.0f, W - 220 * sf), fStatusH);
+        scissor(0, H - fStatusH, std::max(0.0f, W - 356 * sf), fStatusH);
         if (!fBar.empty()) text(10 * sf, ty, fBar.c_str(), nullptr);
         resetScissor();
+        fView.place(W - 346 * sf, H - fStatusH + 3 * sf, 128 * sf, fStatusH - 5 * sf);
+        fView.drawButton(*this, sf);
+        fView.drawMenu(*this, sf);
         const float cur = currentZoom();
         textAlign(ALIGN_CENTER | ALIGN_MIDDLE);
         for (int i = 0; i < kNZooms; ++i) {
@@ -1164,7 +1186,13 @@ private:
     // ------------------------------------------------------------ stato
     CyclesPlugin* fPlugin = nullptr;
     std::unique_ptr<SeqView> fSeq;
-    bool fSeqMode = true;                                  // la vista sequencer all'apertura
+    ViewMenu fView;                                        // Classic / Modern / Elektron Emu
+    void applyView()
+    {
+        fSeqMode = fView.mode != ViewMenu::kClassic;
+        fSeq->setStudio(fView.mode == ViewMenu::kEmu);
+    }
+    bool fSeqMode = true;                                  // Modern or Elektron Emu (not the panel photo)
 
     // la foto (caricata al primo disegno) e i LED accesi
     std::string fPhotoPath;
